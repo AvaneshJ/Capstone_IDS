@@ -1,0 +1,12 @@
+[
+  "flow_duration",
+  "tot_fwd_pkts",
+  "tot_bwd_pkts",
+  "fwd_pkt_len_mean",
+  "bwd_pkt_len_mean",
+  "flow_bytes_s",
+  "flow_pkts_s",
+  "syn_flag_count",
+  "ack_flag_count",
+  "rst_flag_count"
+]
