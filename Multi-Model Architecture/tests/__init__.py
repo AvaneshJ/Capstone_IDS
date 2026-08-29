@@ -1,3 +1,0 @@
-"""
-SentinelAI - Tests Package
-"""
