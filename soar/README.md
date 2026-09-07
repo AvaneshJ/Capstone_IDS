@@ -1,7 +1,13 @@
-# 🛡️ SentinelAI — Autonomous Multi-Agent & SOAR Platform
+# SentinelAI — Autonomous Multi-Agent & SOAR Platform (`soar/`)
 
-> **Role: Member 3 — Multi-Agent Orchestrator & SOAR (Security Orchestration, Automation, and Response) Lead**  
-> **Objective:** The "Brain & Autonomous Action Engine" of SentinelAI that ingests raw network flow telemetry, coordinates 11 specialist agents, executes ML inference, maps threats to MITRE ATT&CK, computes dynamic multi-factor risk scores, enforces OS firewall mitigations, logs events, broadcasts multi-channel alerts, and compiles executive PDF SOC reports.
+> **Role: Member 3 — Multi-Agent Orchestrator & SOAR Lead**  
+> Package path: `Capstone/soar/` (renamed from `Multi-Model Architecture/`).
+
+## Phase-1 model integration
+
+Detection uses `adapters/cic_xgb_adapter.py` → Capstone `models/sentinel_xgb.pkl`  
+(77 CIC features, `label_encoder.pkl`, **no scaler**). Dataset: **CSE-CIC-IDS2018**-style brute-force subset.
+
 
 ---
 

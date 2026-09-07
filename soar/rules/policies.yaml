@@ -20,16 +20,20 @@ whitelists:
     - "10.10.0.0/16"
 
 # Base Attack Weights for Risk Calculation (Scale 0.0 to 10.0)
+# Include Phase-1 CIC label spellings (Benign / FTP-BruteForce / SSH-Bruteforce)
 base_attack_weights:
   DDoS: 9.0
   Botnet: 9.0
   Infiltration: 8.5
   DoS: 8.0
   BruteForce: 7.0
+  SSH-Bruteforce: 7.5
+  FTP-BruteForce: 7.5
   WebAttack: 6.5
   PortScan: 5.0
   AnomalousTraffic: 4.0
   BENIGN: 0.0
+  Benign: 0.0
 
 # Dynamic Risk Thresholds & Autonomous SOAR Actions
 thresholds:
@@ -119,6 +123,16 @@ mitre_mappings:
     technique_name: "Brute Force"
     tactic: "Credential Access"
     description: "Adversary attempting repeated authentication attempts to guess credentials."
+  SSH-Bruteforce:
+    technique_id: "T1110.001"
+    technique_name: "Brute Force: Password Guessing"
+    tactic: "Credential Access"
+    description: "Repeated SSH authentication attempts consistent with credential guessing."
+  FTP-BruteForce:
+    technique_id: "T1110.001"
+    technique_name: "Brute Force: Password Guessing"
+    tactic: "Credential Access"
+    description: "Repeated FTP authentication attempts consistent with credential guessing."
   Botnet:
     technique_id: "T1071"
     technique_name: "Standard Application Layer Protocol"
@@ -130,6 +144,11 @@ mitre_mappings:
     tactic: "Initial Access"
     description: "Adversary exploiting vulnerable edge software to gain unauthorized access."
   BENIGN:
+    technique_id: "T0000"
+    technique_name: "Authorized Baseline Traffic"
+    tactic: "Legitimate"
+    description: "Normal authorized communications."
+  Benign:
     technique_id: "T0000"
     technique_name: "Authorized Baseline Traffic"
     tactic: "Legitimate"

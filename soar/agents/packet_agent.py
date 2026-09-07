@@ -87,6 +87,21 @@ class PacketAgent(BaseAgent):
         psh_flag_count = safe_int(raw.get("psh_flag_count") or raw.get("PSH Flag Count") or 0)
         fin_flag_count = safe_int(raw.get("fin_flag_count") or raw.get("FIN Flag Count") or 0)
 
+        # Prefer nested CIC 77-feature dict; otherwise keep non-meta keys from raw
+        meta_keys = {
+            "src_ip", "dst_ip", "src_port", "dst_port", "protocol",
+            "flow_duration", "tot_fwd_pkts", "tot_bwd_pkts",
+            "fwd_pkt_len_mean", "bwd_pkt_len_mean", "flow_bytes_s", "flow_pkts_s",
+            "syn_flag_count", "ack_flag_count", "rst_flag_count",
+            "psh_flag_count", "fin_flag_count", "timestamp", "flow_id",
+            "Source IP", "Destination IP", "Source Port", "Destination Port",
+        }
+        nested = raw.get("raw_features")
+        if isinstance(nested, dict) and nested:
+            cic_raw = dict(nested)
+        else:
+            cic_raw = {k: v for k, v in raw.items() if k not in meta_keys and k != "raw_features"}
+
         flow_event = FlowEvent(
             src_ip=src_ip,
             dst_ip=dst_ip,
@@ -105,7 +120,7 @@ class PacketAgent(BaseAgent):
             rst_flag_count=rst_flag_count,
             psh_flag_count=psh_flag_count,
             fin_flag_count=fin_flag_count,
-            raw_features=raw
+            raw_features=cic_raw,
         )
 
         return flow_event

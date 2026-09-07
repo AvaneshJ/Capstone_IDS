@@ -92,19 +92,23 @@ class ThreatAnalysisAgent(BaseAgent):
                 "duration": flow.flow_duration
             }
 
-        elif attack_type.upper() == "BRUTEFORCE":
+        elif (
+            attack_type.upper() in ("BRUTEFORCE", "SSH-BRUTEFORCE", "FTP-BRUTEFORCE")
+            or "BRUTE" in attack_type.upper()
+        ):
             indicators.append(f"Repeated short-lived connections to sensitive auth port {flow.dst_port}")
             indicators.append(f"High connection repetition rate ({flow.tot_fwd_pkts} pkts)")
-            indicators.append("Credential stuffing / authentication brute-force sequence")
+            indicators.append(f"Credential stuffing pattern ({attack_type})")
             explanation = (
-                f"Repeated rapid connection attempts directed at authentication service on port {flow.dst_port}. "
-                f"Consistent with credential discovery or dictionary attacks."
+                f"Repeated rapid connection attempts ({attack_type}) directed at authentication "
+                f"service on port {flow.dst_port}. Consistent with credential discovery or dictionary attacks."
             )
             signature = "SIG_CRED_BRUTEFORCE_AUTH_BURST"
             observed = {
                 "target_port": flow.dst_port,
                 "fwd_packets": flow.tot_fwd_pkts,
-                "duration": flow.flow_duration
+                "duration": flow.flow_duration,
+                "attack_label": attack_type,
             }
 
         elif attack_type.upper() == "BOTNET":

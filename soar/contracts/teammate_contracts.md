@@ -2,38 +2,33 @@
 
 This document defines the interface specifications and contract protocols for parallel development across all 4 team members.
 
+**Package layout:** Capstone root → `ml/`, `models/`, `nids/`, `hids/`, `soar/`, `dashboard/`.
+
 ---
 
 ## 1. Member 1 Contract (Machine Learning Lead)
-**What Member 1 Provides:** `models/model.pkl`, `models/scaler.pkl`, `models/feature_names.json`
+**What Member 1 Provides (Phase 1 — actual artefacts):**
 
-### Python Model API Contract:
-Member 1 must export their trained classifier (e.g., XGBoost, Random Forest, LightGBM) using `joblib` with standard scikit-learn API:
+| File | Role |
+|------|------|
+| `models/sentinel_xgb.pkl` | XGBoost classifier |
+| `models/label_encoder.pkl` | Maps class ids ↔ Benign / FTP-BruteForce / SSH-Bruteforce |
+| `models/feature_columns.pkl` | Ordered list of **77** CIC feature names (**no `Dst Port`**) |
+
+SOAR loads these via `soar/adapters/cic_xgb_adapter.py`.  
+Do **not** require `scaler.pkl` for this tree model. Dataset citation: **CSE-CIC-IDS2018**-style brute-force subset.
+
+### Python Model API (through adapter):
 ```python
-import joblib
+from soar.adapters import CicXgbAdapter
 
-# Must support:
-model = joblib.load("models/model.pkl")
-predictions = model.predict(X)            # Returns array of attack class names, e.g. ["PortScan", "DDoS", "BENIGN"]
-probabilities = model.predict_proba(X)    # Returns confidence probability distribution
-classes = model.classes_                  # Array of class names
+adapter = CicXgbAdapter()
+adapter.load()
+label, confidence, probs = adapter.predict(raw_features_dict_77)
 ```
 
-### Feature Order Specification (`models/feature_names.json`):
-```json
-[
-  "flow_duration",
-  "tot_fwd_pkts",
-  "tot_bwd_pkts",
-  "fwd_pkt_len_mean",
-  "bwd_pkt_len_mean",
-  "flow_bytes_s",
-  "flow_pkts_s",
-  "syn_flag_count",
-  "ack_flag_count",
-  "rst_flag_count"
-]
-```
+Legacy short `feature_names.json` sample contract is obsolete for Phase-1 NIDS.  
+Live flows must populate `FlowEvent.raw_features` with the 77 CIC keys (`nids/feature_extractor.py`).
 
 ---
 

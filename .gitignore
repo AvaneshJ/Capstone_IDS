@@ -12,6 +12,10 @@ venv/
 # Jupyter
 .ipynb_checkpoints/
 
+# SOAR runtime artefacts
+soar/database/*.db
+soar/reports/*.pdf
+
 # OS / IDE
 .DS_Store
 Thumbs.db
