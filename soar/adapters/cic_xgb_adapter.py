@@ -2,18 +2,19 @@
 CIC XGBoost adapter — Phase-1 NIDS artefacts → Detection Agent.
 
 Loads Capstone/models/:
-  - sentinel_xgb.pkl
-  - label_encoder.pkl
-  - feature_columns.pkl  (77 CIC names, no Dst Port)
+  - sentinel_xgb_v2.pkl
+  - label_encoder_v2.pkl
+  - feature_columns_v2.pkl  (77 CIC names, no Dst Port)
 
 Does NOT require scaler.pkl (tree models).
-Does NOT retrain to match the short sample-feature contract.
+Does NOT feed Dst Port into the model; optional dst_port only applies a post-hoc override
+for DoS ↔ FTP/SSH confusion.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -22,11 +23,16 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from config.paths import MODEL_ENCODER, MODEL_FEATURES, MODEL_XGB  # noqa: E402
+from config.paths import MODELS_DIR
+MODEL_XGB = MODELS_DIR / "sentinel_xgb_v2.pkl"
+MODEL_ENCODER = MODELS_DIR / "label_encoder_v2.pkl"
+MODEL_FEATURES = MODELS_DIR / "feature_columns_v2.pkl"
+
+_AMBIGUOUS_PORT_LABELS = frozenset({"DoS", "FTP-BruteForce", "SSH-Bruteforce"})
 
 
 class CicXgbAdapter:
-    """Thin inference wrapper around the CSE-CIC-IDS2018-style 3-class XGBoost model."""
+    """Thin inference wrapper around the CSE-CIC-IDS2018-style 6-class XGBoost model."""
 
     def __init__(
         self,
@@ -83,10 +89,38 @@ class CicXgbAdapter:
                 vector.append(0.0)
         return np.asarray([vector], dtype=np.float32)
 
-    def predict(self, raw_features: Dict[str, Any]) -> Tuple[str, float, Dict[str, float]]:
+    @staticmethod
+    def apply_port_override(label: str, dst_port: Optional[Union[int, float, str]]) -> str:
+        """
+        Hybrid post-process: resolve DoS ↔ brute-force swaps using destination port.
+
+        Port is never a model feature — only used when the ML label is already in the
+        ambiguous DoS / FTP / SSH set. Benign and other attacks are left unchanged.
+        """
+        if dst_port is None or label not in _AMBIGUOUS_PORT_LABELS:
+            return label
+        try:
+            port = int(float(dst_port))
+        except (TypeError, ValueError):
+            return label
+
+        if port == 21 and label in {"DoS", "FTP-BruteForce"}:
+            return "FTP-BruteForce"
+        if port == 22 and label in {"DoS", "SSH-Bruteforce"}:
+            return "SSH-Bruteforce"
+        return label
+
+    def predict(
+        self,
+        raw_features: Dict[str, Any],
+        dst_port: Optional[Union[int, float, str]] = None,
+    ) -> Tuple[str, float, Dict[str, float]]:
         """
         Returns (label_name, confidence, probability_dict).
-        Labels: Benign | FTP-BruteForce | SSH-Bruteforce
+        Labels: Benign | FTP-BruteForce | SSH-Bruteforce | Botnet | DoS | DDoS
+
+        If dst_port is omitted, tries raw_features["Dst Port"] / ["dst_port"] for the
+        hybrid override only (still excluded from the 77-dim vector).
         """
         if not self.is_loaded:
             self.load()
@@ -99,6 +133,11 @@ class CicXgbAdapter:
         classes = [str(c) for c in self.label_encoder.classes_]
         prob_dict = {name: round(float(p), 4) for name, p in zip(classes, probs)}
         confidence = float(max(probs))
+
+        if dst_port is None:
+            dst_port = raw_features.get("Dst Port", raw_features.get("dst_port"))
+        label = self.apply_port_override(label, dst_port)
+
         return label, confidence, prob_dict
 
     @staticmethod

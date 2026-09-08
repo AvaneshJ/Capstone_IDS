@@ -5,8 +5,8 @@
 
 ## Phase-1 model integration
 
-Detection uses `adapters/cic_xgb_adapter.py` → Capstone `models/sentinel_xgb.pkl`  
-(77 CIC features, `label_encoder.pkl`, **no scaler**). Dataset: **CSE-CIC-IDS2018**-style brute-force subset.
+Detection uses `adapters/cic_xgb_adapter.py` → Capstone `models/sentinel_xgb_v2.pkl`  
+(77 CIC features, `label_encoder_v2.pkl`, **no scaler**). Dataset: **CSE-CIC-IDS2018**-style multiclass + hybrid `dst_port` override.
 
 
 ---
@@ -103,9 +103,6 @@ sentinel-ai/
 ├── contracts/
 │   └── teammate_contracts.md # Standardized API specifications for Members 1, 2, and 4
 │
-├── scripts/
-│   └── generate_sample_model.py # Sample ML artifact generator for immediate testing
-│
 ├── tests/
 │   ├── mock_traffic.py       # High-fidelity synthetic cyberattack flow generator
 │   └── test_agents.py        # Comprehensive 12-test unit and integration suite
@@ -162,12 +159,7 @@ $$\text{Risk Score} = (\text{Base Attack Weight} \times \text{Confidence}) + \te
 python -m pip install -r requirements.txt
 ```
 
-### Step 2: Generate Sample Model Artifacts (Optional)
-```powershell
-python scripts/generate_sample_model.py
-```
-
-### Step 3: Run Full Unit & Integration Test Suite
+### Step 2: Run Full Unit & Integration Test Suite
 ```powershell
 python -m unittest discover -s tests -p "test_*.py" -v
 ```

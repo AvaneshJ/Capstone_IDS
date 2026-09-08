@@ -1,5 +1,5 @@
 """
-SOAR smoke demo with real Phase-1 XGBoost on cic_clean.csv rows.
+SOAR smoke demo with real multiclass XGBoost v2 on cic_multiclass_clean.csv rows.
 
 From Capstone root:
   python soar/demo_real_model.py
@@ -54,7 +54,7 @@ def pick_rows(df: pd.DataFrame) -> list[int]:
 
 def main() -> None:
     print(f"{Fore.CYAN}SentinelAI — real CIC XGBoost through SOAR orchestrator{Style.RESET_ALL}")
-    print("Dataset: CSE-CIC-IDS2018-style brute-force subset (77 features, no Dst Port)\n")
+    print("Dataset: CSE-CIC-IDS2018-style multiclass (77 features, no Dst Port + hybrid port override)\n")
 
     orch = SentinelOrchestrator(dry_run_firewall=True, enable_desktop_alerts=False)
     orch.initialize()

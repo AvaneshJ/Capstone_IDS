@@ -10,9 +10,16 @@ from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import joblib
-from paths import CLEAN_CSV, MODEL_XGB, MODEL_ENCODER, MODEL_FEATURES
+from paths import CLEAN_CSV, MODELS_DIR
+from sklearn.utils.class_weight import compute_sample_weight
 
-LABELS = [0, 1, 2]
+MODEL_XGB = MODELS_DIR / "sentinel_xgb_v2.pkl"
+MODEL_ENCODER = MODELS_DIR / "label_encoder_v2.pkl"
+MODEL_FEATURES = MODELS_DIR / "feature_columns_v2.pkl"
+
+
+
+LABELS = [0, 1, 2, 3, 4, 5]
 
 df = pd.read_csv(CLEAN_CSV)
 
@@ -20,7 +27,7 @@ y = df["Label"]
 le = LabelEncoder()
 y_encoded = le.fit_transform(y)
 
-X = df.drop(columns=["Label", "Dst Port"])
+X = df.drop(columns=["Label", "Dst Port"],errors="ignore")
 print("X shape (no Dst Port):", X.shape)
 print("Classes:", list(le.classes_))
 
@@ -30,9 +37,10 @@ X_train, X_test, y_train, y_test = train_test_split(
     random_state=42,
     stratify=y_encoded
 )
+sample_weight = compute_sample_weight(class_weight="balanced", y=y_train)
 
-xgb = XGBClassifier(random_state=42)
-xgb.fit(X_train, y_train)
+xgb = XGBClassifier(random_state=42,n_estimators=200, max_depth=6, learning_rate=0.1, subsample=0.8, colsample_bytree=0.8, eval_metric="mlogloss")
+xgb.fit(X_train, y_train, sample_weight=sample_weight)
 
 train_keys = pd.util.hash_pandas_object(X_train, index=False)
 test_keys = pd.util.hash_pandas_object(X_test, index=False)
@@ -61,19 +69,6 @@ print("Accuracy:", accuracy_score(y_test, y_pred))
 print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred, labels=LABELS))
 print(classification_report(
     y_test, y_pred,
-    labels=LABELS, target_names=le.classes_, zero_division=0
-))
-
-ports = df.loc[X_test.index, "Dst Port"].to_numpy()
-y_pred_port = np.full(len(ports), le.transform(["Benign"])[0])
-y_pred_port[ports == 21] = le.transform(["FTP-BruteForce"])[0]
-y_pred_port[ports == 22] = le.transform(["SSH-Bruteforce"])[0]
-
-print("\n========== EXPERIMENT C (port rule, full test) ==========")
-print("Accuracy:", accuracy_score(y_test, y_pred_port))
-print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred_port, labels=LABELS))
-print(classification_report(
-    y_test, y_pred_port,
     labels=LABELS, target_names=le.classes_, zero_division=0
 ))
 

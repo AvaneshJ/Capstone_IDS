@@ -11,12 +11,13 @@ This document defines the interface specifications and contract protocols for pa
 
 | File | Role |
 |------|------|
-| `models/sentinel_xgb.pkl` | XGBoost classifier |
-| `models/label_encoder.pkl` | Maps class ids ↔ Benign / FTP-BruteForce / SSH-Bruteforce |
-| `models/feature_columns.pkl` | Ordered list of **77** CIC feature names (**no `Dst Port`**) |
+| `models/sentinel_xgb_v2.pkl` | 6-class XGBoost classifier |
+| `models/label_encoder_v2.pkl` | Maps class ids ↔ Benign / Botnet / DDoS / DoS / FTP-BruteForce / SSH-Bruteforce |
+| `models/feature_columns_v2.pkl` | Ordered list of **77** CIC feature names (**no `Dst Port`**) |
 
 SOAR loads these via `soar/adapters/cic_xgb_adapter.py`.  
-Do **not** require `scaler.pkl` for this tree model. Dataset citation: **CSE-CIC-IDS2018**-style brute-force subset.
+Do **not** require `scaler.pkl` for this tree model. Dataset citation: **CSE-CIC-IDS2018**-style multiclass (`cic_multiclass_clean.csv`).
+Optional hybrid: pass `dst_port` into `adapter.predict(...)` to resolve DoS ↔ FTP/SSH swaps (port is not a model feature).
 
 ### Python Model API (through adapter):
 ```python
