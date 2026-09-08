@@ -45,7 +45,7 @@ def predict_csv_row(row_index: int = 0) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Predict one CIC clean CSV row with Phase-1 XGBoost")
-    parser.add_argument("--row", type=int, default=0, help="Row index in cic_clean.csv")
+    parser.add_argument("--row", type=int, default=0, help="Row index in cic_multiclass_clean.csv")
     args = parser.parse_args()
 
     result = predict_csv_row(args.row)

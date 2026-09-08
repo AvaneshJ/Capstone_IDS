@@ -1,7 +1,7 @@
 # SentinelAI — Model Feature Contract (77 columns)
 
-**Source:** `models/feature_columns.pkl`  
-**Model:** XGBoost (`models/sentinel_xgb.pkl`), trained **without** `Dst Port`  
+**Source:** `models/feature_columns_v2.pkl`
+**Model:** XGBoost (`models/sentinel_xgb_v2.pkl`), trained **without** `Dst Port`
 **Order matters:** inference must supply values in this exact index order.
 
 This list is the Phase 1 → live pipeline contract. Any flow exporter output must be mapped into these names (or documented as missing).
@@ -149,7 +149,7 @@ This list is the Phase 1 → live pipeline contract. Any flow exporter output mu
 
 ```python
 import joblib
-cols = joblib.load("models/feature_columns.pkl")  # run from Capstone root
+cols = joblib.load("models/feature_columns_v2.pkl")  # run from Capstone root
 assert len(cols) == 77
 ```
 

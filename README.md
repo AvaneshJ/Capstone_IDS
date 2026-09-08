@@ -1,6 +1,6 @@
 # SentinelAI — Hybrid NIDS + HIDS + Multi-Agent SOAR
 
-CSE-CIC-**IDS2018**-style network detection (XGBoost, 77 flow features, no `Dst Port`)
+CSE-CIC-**IDS2018**-style network detection (6-class XGBoost v2, 77 flow features, no `Dst Port`)
 plus a multi-agent SOAR pipeline, with HIDS and dashboard stubs for later phases.
 
 ## Layout
@@ -11,7 +11,7 @@ Capstone/
 ├── data/             # Local datasets only (gitignored)
 ├── docs/             # Reports, feature contract, gameplan
 ├── ml/               # Offline EDA / train / experiments
-├── models/           # sentinel_xgb.pkl, label_encoder.pkl, feature_columns.pkl
+├── models/           # sentinel_xgb_v2.pkl, label_encoder_v2.pkl, feature_columns_v2.pkl
 ├── nids/             # Live capture + feature bridge + predict
 ├── hids/             # Host monitoring stubs (Phase 5)
 ├── soar/             # Multi-agent SOAR (Detection → Response → Report)
@@ -39,8 +39,8 @@ python demo_runner.py
 
 ## Dataset citation
 
-Working flow CSV matches **CSE-CIC-IDS2018** brute-force style labels
-(`Benign`, `FTP-BruteForce`, `SSH-Bruteforce`), not CICIDS2017 Patator names.
+Working flow CSV matches **CSE-CIC-IDS2018** multiclass labels
+(`Benign`, `Botnet`, `DDoS`, `DoS`, `FTP-BruteForce`, `SSH-Bruteforce`).
 
 ## Integration rule
 

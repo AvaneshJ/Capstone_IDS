@@ -131,12 +131,13 @@ class DetectionAgent(BaseAgent):
             for cic_name, val in short_aliases.items():
                 raw.setdefault(cic_name, val)
 
-            label, confidence, prob_dict = self.adapter.predict(raw)
+            # Model uses 77 CIC cols only; dst_port is a hybrid post-hoc override.
+            label, confidence, prob_dict = self.adapter.predict(raw, dst_port=flow.dst_port)
             return DetectionResult(
                 attack_type=label,
                 confidence=round(confidence, 4),
                 probabilities=prob_dict,
-                model_version="CIC_XGB_Phase1_v1",
+                model_version="CIC_XGB_Phase1_v1_hybrid",
                 is_anomaly=not CicXgbAdapter.is_benign(label),
             )
         except Exception as exc:
