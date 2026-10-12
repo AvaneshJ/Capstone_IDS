@@ -1,6 +1,8 @@
 # SentinelAI — Project Gameplan & Blueprint
 
-**Status date:** October 2026 (working end-to-end prototype: NIDS v3 + HIDS + SOAR + live dashboard)  
+**Status date:** October 2026 — **project complete** (shipped as the Windows installer `SentinelAI Setup 1.0.0.exe`:
+live NIDS v3 + HIDS + SOAR + self-protection + desktop app). Only host–network correlation remains open.
+For the research paper start at `docs/README.md` and `docs/Research_Paper_Guide.md`.  
 **Vision:** Hybrid **NIDS + HIDS + multi-agent SOAR + explainable alerts** for Windows  
 **Repo:** `AvaneshJ/Capstone_IDS` (SSH: `git@github-personal:…`)
 
@@ -28,13 +30,17 @@ Detect **network attacks** and **host malware behaviour** on Windows, explain th
 | Demo path | `soar/demo_real_model.py`, `soar/demo_runner.py`, `soar/main.py` | Supervisor walkthrough of agent pipeline |
 | HIDS | `hids/`, `soar/agents/host_agent.py` | Process + credential-file sensors, Isolation Forest, HostBridge → SOAR (dry-run kill) |
 | Dashboard | `dashboard/` | React 19 + Vite; live alerts over WebSocket, network + host incidents, unblock, PDF reports, Demo panel |
+| Active NIDS model (**v3, 7-class**) | `models/*_v3.pkl`, `docs/ML_Package_v3.md` | CIC + Kali→Ubuntu lab merge; adds PortScan; OOD policy layer in `soar/rules/ood_policy.py` |
+| Live capture | `nids/live_capture.py`, `soar/core/live_monitor.py` | Npcap or WinDivert fallback → Java-CICFlowMeter-compatible 77 features → SOAR; inbound-only, cooldowns, port-scan fan-out rule |
+| Self-protection | `config/integrity.py`, `config/security.py`, `soar/core/self_protection.py`, `hids/tamper_monitor.py` | Signed integrity manifest, API token, HMAC evidence chain, heartbeats, tamper sensor, unclean-shutdown detection |
+| False-positive handling | `hids/trust.py`, Settings → Trusted programs | Code-signing reputation, user allow rules (hash / publisher), "Stop this program now" |
+| Desktop app + installer | `dashboard/electron/`, `packaging/` | Electron app with tray, admin elevation, start-at-login task; PyInstaller engine; NSIS per-machine installer |
 
-### Critical gap (integration) — updated
+### Integration gap — closed
 
-Legacy short contracts (`model.pkl`, `scaler.pkl`, `feature_names.json`) are **obsolete**.  
-Shipping artefacts: `sentinel_xgb_v2.pkl`, `label_encoder_v2.pkl`, `feature_columns_v2.pkl` via `soar/adapters/cic_xgb_adapter.py`.
-
-**Remaining gap:** live packets/flows → 77 CIC keys + `dst_port` → orchestrator (not offline CSV).
+Live packets now flow through `nids/live_capture.py` → 77 CIC keys + `dst_port` → orchestrator. Shipping artefacts
+are the v3 files (`sentinel_xgb_v3.pkl`, `label_encoder_v3.pkl`, `feature_columns_v3.pkl`) loaded through
+`soar/adapters/cic_xgb_adapter.py`; v2 stays on disk as rollback.
 
 ---
 
@@ -75,11 +81,11 @@ Do **not** claim all attack types on day one. Expand labels only when you have d
 | Tier | Capability | When |
 |------|------------|------|
 | **T0 — Done** | Offline **6-class** NIDS v2 + SOAR demo on CSV / synthetic flows | Frozen (`ML_Package_v2.md`) |
-| **T1 — Next** | Lab PCAP/live flows → feature bridge → real XGBoost predict + log | Immediate priority |
-| **T2** | SOAR on live NIDS hits (dry-run firewall → approved block) | After T1 stable |
-| **T3 — Prototype done** | Minimal HIDS (process + sensitive file/cookie path access) + Isolation Forest | Parallel after T1 starts |
+| **T1 — Done** | Lab PCAP/live flows → feature bridge → real XGBoost predict + log | `nids/live_capture.py` |
+| **T2 — Done** | SOAR on live NIDS hits (dry-run firewall → approved block) | Test mode by default |
+| **T3 — Done** | Minimal HIDS (process + sensitive file/cookie path access) + Isolation Forest | Plus trust layer |
 | **T4 — Dashboard done** | Correlation (host + network same incident) + React dashboard | Correlation still open |
-| **T5** | Extra NIDS classes (e.g. Port Scan) via more CIC days / retrain | Only after T1 works; DDoS/DoS/Botnet already in v2 |
+| **T5 — Done** | Extra NIDS classes (Port Scan) via lab data / retrain | v3 + live fan-out rule |
 
 Supervisor CVE note: if required, **anchor HIDS** to one Windows CVE as a **case study** (mitigation + behavioural simulation). Platform stays the same; case study changes. Prefer network-visible or behaviour-demo CVEs — not “we wrote an RCE exploit.”
 
@@ -138,7 +144,10 @@ Capstone/
 
 **Exit criteria met:** real XGBoost labels + confidence through SOAR on CSV paths.
 
-### Phase 3 — Live NIDS lab + feature bridge — **CRITICAL PATH (NEXT)**
+### Phase 3 — Live NIDS lab + feature bridge — **DONE**
+Lab built (Kali `192.168.56.101` → Ubuntu `192.168.56.102`), lab flows merged into model v3, live capture with
+Npcap or WinDivert, and a Java-CICFlowMeter-compatible feature bridge (`nids/live_capture.py`).
+
 1. VirtualBox + Kali host-only network  
 2. Capture (Scapy and/or CICFlowMeter) on Windows  
 3. Feature extractor → **77 columns, training order**  
@@ -147,7 +156,9 @@ Capstone/
 
 **Exit criteria:** Hydra SSH against **your** lab target → model often says SSH-Bruteforce; browsing → mostly Benign (expect some drift).
 
-### Phase 4 — SOAR hardening (NIDS-triggered)
+### Phase 4 — SOAR hardening (NIDS-triggered) — **DONE**
+Plus the OOD policy layer, inbound-only routing, cooldowns and incident budget (`soar/core/live_monitor.py`).
+
 1. Policies in `policies.yaml` (thresholds, whitelist, cooldown)  
 2. Firewall agent **dry-run first**, then optional `netsh` with user approval  
 3. SQLite incident trail + PDF report on real incidents  
@@ -174,9 +185,15 @@ Sensors (`hids/process_monitor.py`, `hids/file_monitor.py`), stealer simulator +
 **Exit criteria:** User sees story-style alerts, not raw flags. — **met** in the prototype (verified end to end:
 SSH brute-force flow → simulated block, stealer event → simulated kill, both shown live with a linked detail page).
 
-### Phase 7 — Expand NIDS classes (optional)
-- Add CIC days for Port Scan / DDoS only after live bridge works  
-- Retrain; update MITRE map (`T1046`, `T1498`, etc.)
+### Phase 7 — Expand NIDS classes — **DONE (v3)**
+- PortScan added from lab nmap captures; DDoS/DoS lab overlays; MITRE map includes `T1046`, `T1498`, `T1499`  
+
+### Phase 8 — Self-protection, false-positive handling, packaging — **DONE**
+- Integrity manifest, API token, HMAC evidence chain, heartbeat watchdog, tamper sensor, unclean-shutdown
+  detection with Windows-shutdown attribution  
+- Program trust (code-signing reputation + user allow rules) and real "Stop this program now"  
+- Electron desktop app (simple/expert modes, tray, admin elevation), PyInstaller engine, NSIS installer  
+- Docs: `System_Architecture.md`, `Methodology_and_Algorithms.md`, `Evaluation_and_Results.md`
 
 ---
 
@@ -202,7 +219,7 @@ You **never** judge the model on random public Wi‑Fi first. You generate label
 | FTP Hydra | FTP-BruteForce (hybrid helps if DoS/FTP ambiguous on port 21) |
 | DoS / DDoS lab floods | DoS / DDoS (trained in v2; live feature quality may still drift) |
 | Botnet-like C2 (if lab matches training) | Botnet |
-| Nmap / Port Scan | **Not a dedicated class** — expect Benign or wrong; do not claim until retrain |
+| Nmap / Port Scan | PortScan (v3 lab class) and the live fan-out rule (≥ 15 ports from one source in 20 s) |
 
 Keep a simple CSV: `timestamp, scenario, expected, predicted, confidence, notes`.
 
@@ -240,10 +257,10 @@ Superseded by section 13 now that HIDS and the dashboard prototype exist.
 
 | Member | Owns | Near-term deliverable |
 |--------|------|------------------------|
-| **1 — AIML** | `ml/`, `models/`, HIDS model later, live eval scorecard | Package **frozen** at v2; support live scorecard only |
-| **2 — Capture / security** | `nids/` capture + extractor, lab attacks | PCAP/live → flow dict (**next bottleneck**) |
-| **3 — SOAR** | `soar/` | Policies + dry-run response on live hits |
-| **4 — Dashboard** | `dashboard/` + API consumer | React + WS dashboard wired to the live API (done); polish + new features |
+| **1 — AIML** | `ml/`, `models/`, HIDS model, live eval scorecard | Paper: dataset analysis, v3 + HIDS results (Evaluation V-A to V-D) |
+| **2 — Capture / security** | `nids/` capture + extractor, lab attacks, `hids/` sensors | Paper: lab setup, feature bridge, held-out lab results (V-C) |
+| **3 — SOAR** | `soar/`, self-protection, trust | Paper: architecture, risk/OOD/trust/self-protection methodology |
+| **4 — Dashboard** | `dashboard/`, packaging | Paper: deployment, UI figures, system measurements (V-E) |
 
 ---
 
@@ -259,7 +276,7 @@ Skip buying commercial IDS. Stay in isolated VMs for attacks.
 
 ## 11. 45-second pitch (corrected)
 
-> SentinelAI is a hybrid AI Windows defence platform. Our NIDS uses a frozen 6-class XGBoost model on CSE-CIC-IDS2018-style flow features (Benign, Botnet, DDoS, DoS, FTP and SSH brute force), with a hybrid port policy for DoS/FTP/SSH ambiguity, and we are bridging live lab traffic into that model. A multi-agent SOAR layer already maps MITRE techniques, scores risk, can drive firewall actions, logs to SQLite, and builds PDF reports. Next we prove live detection in the lab, then add a Windows HIDS for behavioural threats such as session-cookie theft, then a user-friendly dashboard. Goal: detect on both network and host, explain, and respond.
+> SentinelAI is a hybrid AI defence platform for Windows, shipped as one installer. Its network side classifies live traffic into seven classes (Benign, Botnet, DDoS, DoS, FTP and SSH brute force, port scan) with an XGBoost model trained on CSE-CIC-IDS2018 plus our own attack-lab captures, without the destination-port shortcut, and a runtime policy that catches attacks the model is over-confident about. Its host side spots password-stealing programs with an anomaly model and audited access to browser credential files, while code-signing reputation keeps trusted software from being flagged. Eleven agents map each event to MITRE ATT&CK, score risk, block or stop the threat (test mode by default), explain it in plain language and record it in a tamper-evident log. Goal: detect on both network and host, explain, and respond, for people without a security team.
 
 ---
 
@@ -275,12 +292,16 @@ Minimum shippable Capstone story:
 
 ---
 
-## 13. What to do next (after the working prototype)
+All five items above are met (item 4 with the full desktop app).
 
-1. Run the full stack (`README.md` quick start) and keep the end-to-end demo working.  
-2. Host + network correlation into one incident (Phase 6, item 1).  
-3. Live NIDS capture straight into the API (`/api/flows/ingest`) instead of CSV replay, with a scorecard.  
-4. Fixes and features from the dashboard review; decide when (if ever) to leave test mode for real `netsh` blocks.
+---
+
+## 13. What to do next (research paper phase)
+
+1. Write the paper from `docs/Research_Paper_Guide.md`; fill the 📝 result tables in
+   `docs/Evaluation_and_Results.md` on the machine that holds `data/lab/` and the HIDS run logs.  
+2. Optional research extension: host + network correlation into one incident (Phase 6, item 1).  
+3. Keep the installer and the end-to-end demo working for the viva.
 
 ---
 

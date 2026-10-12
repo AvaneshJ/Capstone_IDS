@@ -59,6 +59,14 @@ Dataset: `data/processed/cic_lab_merged_clean.csv`
 
 ---
 
+## Paper / results
+
+Hyper-parameters, merge settings and the evaluation protocol are written up in
+`docs/Methodology_and_Algorithms.md` (section A) and `docs/Evaluation_and_Results.md` (V-B, V-C). Paste the
+output of `train_xgb_v3.py` and `eval_v3_dual.py` into those tables.
+
+---
+
 ## Rollback
 
 Point `config/paths.py` back to `*_v2.pkl` if needed. Do not delete v2 artefacts.

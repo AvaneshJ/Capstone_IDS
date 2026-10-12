@@ -99,7 +99,7 @@ dashboard then runs on bundled sample data with no backend.
 | `dashboard/` | React + TypeScript SOC dashboard |
 | `docs/` | Progress report, ML package notes, feature list, project blueprint |
 
-> "Each folder has its own README, and there are unit tests for NIDS, ML, HIDS and SOAR — 111 tests in total."
+> "Each folder has its own README, and there are unit tests for NIDS, ML, HIDS and SOAR — 224 tests in total."
 
 ---
 
@@ -291,19 +291,20 @@ python -m pytest nids/tests ml/tests hids/tests soar/tests -q
 >
 > 1. **Offline accuracy is not live accuracy.** CIC scores are very high, but real campus traffic will be lower. Our
 >    next step is a live scorecard: what we ran vs what the model said.
-> 2. **Live capture straight into the API** is built in pieces — capture, feature extractor, ingest endpoint — but
->    our main demo still replays lab-captured flows rather than sniffing live end to end.
-> 3. **Host + network correlation** — joining a stealer on the PC with its outbound connection into one incident —
+> 2. **Host + network correlation** — joining a stealer on the PC with its outbound connection into one incident —
 >    is not started.
-> 4. **Test mode:** real `netsh` blocking and process killing are implemented but off by default for safety.
-> 5. **HIDS dataset is small** and built from a simulator, so its numbers are a prototype result.
+> 3. **Test mode:** real `netsh` blocking and automatic process killing are implemented but off by default for
+>    safety. The user can still really stop a flagged program from its alert.
+> 4. **HIDS dataset is small** and built from a simulator, so its numbers are a prototype result.
+> 5. **No kernel-level self-defence.** An administrator can stop SentinelAI; we detect and record that, but cannot
+>    prevent it without signed drivers.
 > 6. We don't decrypt HTTPS — detection uses flow metadata only — and we don't claim to detect every attack type."
 
 ---
 
 ## 10. Next steps (30 sec)
 
-> "1. Live NIDS capture → `/api/flows/ingest` with a scorecard of real lab attacks.
+> "1. Write the research paper (`docs/Research_Paper_Guide.md`) with the held-out lab and HIDS results.
 > 2. Correlate host and network events into one incident.
 > 3. Grow the HIDS dataset on more machines.
 > 4. Decide with you when it is safe to switch from test mode to real blocking."
@@ -332,6 +333,17 @@ that exact key matches — no guessing by process name.
 Test mode is on by default for both. There's a whitelist and cooldowns in `policies.yaml`, the browser's own
 legitimate access is recognised, and blocks auto-expire.
 
+**Q: What about false alarms from legitimate software (e.g. an antivirus reading browser files)?**
+That happened with McAfee. Programs with a valid code-signing certificate installed in Program Files are now
+reported once a day at LOW and never stopped. The user can also trust a program by file fingerprint or publisher,
+like Defender or CrowdStrike allow-lists. Script hosts such as PowerShell and Python are never trusted, because
+attackers use them too.
+
+**Q: Can an attacker just switch SentinelAI off or delete the evidence?**
+They can stop it with admin rights, but it is detected: heartbeats, a run marker that tells a kill apart from a
+Windows shutdown, and a tamper sensor for log clearing and kill commands. Every incident is in an HMAC hash chain
+with an anchor outside the database, so edits or deletions show up.
+
 **Q: What does the LLM do, and what if there's no internet?**
 It writes a plain-English explanation and remediation steps. It tries Gemini, then local Ollama, then falls back
 to a built-in rule-based expert system, so it always works offline.
@@ -354,5 +366,5 @@ and simulator contributors from the HIDS work.)
 
 > "To summarise: SentinelAI detects attacks on both the network and the host, explains them in plain language with
 > MITRE mapping, and responds automatically through a multi-agent SOAR pipeline — all visible live on a dashboard.
-> The full pipeline works end to end today in safe test mode. Our next milestone is proving it on live lab traffic
-> with a scorecard. Thank you — happy to take questions."
+> It runs on live traffic today, protects itself against tampering, and ships as a single Windows installer, in safe
+> test mode by default. Thank you — happy to take questions."

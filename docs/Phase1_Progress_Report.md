@@ -2,7 +2,8 @@
 
 > **Archive note (Sep 2026):** This report documents the original **3-class** offline baseline.  
 > The **shipping NIDS package is now v2 (6-class)** — see `docs/ML_Package_v2.md` and `docs/features_list.md`.  
-> Artefacts named `sentinel_xgb.pkl` / `label_encoder.pkl` / `feature_columns.pkl` in sections below were superseded by `*_v2.pkl`.
+> Artefacts named `sentinel_xgb.pkl` / `label_encoder.pkl` / `feature_columns.pkl` in sections below were superseded by `*_v2.pkl`.  
+> **Oct 2026:** the active model is now **v3 (7-class, CIC + lab)**. The experiments here remain the paper's dataset-bias evidence (`docs/Evaluation_and_Results.md`, V-A).
 
 **Project:** SentinelAI — Machine Learning based Network Intrusion Detection System  
 **Programme:** BTech Computer Science & Engineering (Final Year)  
