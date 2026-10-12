@@ -491,8 +491,106 @@ def get_host_incidents(
     """
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
-    incidents = orchestrator.db_manager.get_recent_host_incidents(limit=limit, classification=classification)
+    db = orchestrator.db_manager
+    incidents = db.get_recent_host_incidents(limit=limit, classification=classification)
+    followups = db.get_host_followups([i["incident_id"] for i in incidents])
+    for inc in incidents:
+        inc["followups"] = followups.get(inc["incident_id"], [])
     return {"count": len(incidents), "host_incidents": incidents}
+
+
+class TrustRequest(BaseModel):
+    scope: str = Field("auto", pattern="^(auto|publisher|file)$",
+                       description="publisher = everything validly signed by this publisher, file = this exact file")
+
+
+def _host_process(incident_id: str):
+    from core.schemas import HostProcessInfo
+
+    if not orchestrator:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+    row = orchestrator.db_manager.get_host_incident(incident_id)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Host incident {incident_id} not found")
+    try:
+        proc = (json.loads(row.get("raw_json") or "{}").get("process")) or {}
+    except ValueError:
+        proc = {}
+    return HostProcessInfo(
+        pid=int(proc.get("pid") or row.get("pid") or 0),
+        process_name=str(proc.get("process_name") or row.get("process_name") or "").lower(),
+        parent_name=str(proc.get("parent_name") or ""),
+        exe_path=str(proc.get("exe_path") or ""),
+    )
+
+
+def _trust_changed(action: str, details: str) -> None:
+    orchestrator.db_manager.save_audit_log(agent_name="User", action=action, details=details, level="INFO")
+    if live_monitor:
+        live_monitor.reload_trust_rules()
+
+
+@app.get("/api/trust")
+def list_trusted_programs():
+    """Programs the user marked as safe; their host alerts are suppressed."""
+    if not orchestrator:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+    rules = orchestrator.db_manager.get_trusted_programs()
+    return {"count": len(rules), "rules": rules}
+
+
+@app.delete("/api/trust/{rule_id}")
+def remove_trusted_program(rule_id: int):
+    if not orchestrator:
+        raise HTTPException(status_code=503, detail="Orchestrator not initialized")
+    if not orchestrator.db_manager.remove_trusted_program(rule_id):
+        raise HTTPException(status_code=404, detail=f"Trust rule {rule_id} not found")
+    _trust_changed("TRUST_REMOVED", f"rule={rule_id}")
+    return {"status": "SUCCESS"}
+
+
+@app.post("/api/host/incidents/{incident_id}/trust")
+def trust_host_program(incident_id: str, req: TrustRequest = TrustRequest()):
+    """Mark the program behind a host alert as safe (false positive) and stop alerting on it."""
+    from hids import trust
+
+    process = _host_process(incident_id)
+    exe = process.exe_path
+    if not exe or not os.path.isfile(exe):
+        raise HTTPException(status_code=400, detail="The program's file can't be found any more, so it can't be identified safely.")
+
+    rule, why_not = trust.rule_for(exe, req.scope)
+    if rule is None:
+        raise HTTPException(status_code=400, detail=why_not)
+
+    saved = orchestrator.db_manager.add_trusted_program(rule["kind"], rule["value"], rule["label"], incident_id)
+    if not saved:
+        raise HTTPException(status_code=500, detail="Could not save the trust rule.")
+    orchestrator.db_manager.add_host_followup(incident_id, "MARKED_SAFE", "OK", rule["label"])
+    _trust_changed("TRUST_ADDED", f"{rule['kind']}={rule['value']} from {incident_id} ({exe})")
+    return {"status": "SUCCESS", "rule": saved}
+
+
+@app.post("/api/host/incidents/{incident_id}/terminate")
+def terminate_host_program(incident_id: str):
+    """Really stop the process behind a host alert, even in test mode (identity-checked against the alert)."""
+    process = _host_process(incident_id)
+    outcome, detail = orchestrator.host_agent.terminate_process(process)
+    messages = {
+        "SUCCESS": f"{process.process_name} (PID {process.pid}) was stopped.",
+        "ALREADY_EXITED": f"{process.process_name} had already closed.",
+        "IDENTITY_MISMATCH": f"Not stopped: PID {process.pid} now belongs to a different program ({detail}).",
+        "REFUSED": f"Not stopped: {detail}.",
+    }
+    message = messages.get(outcome, f"Could not stop {process.process_name}: {detail}")
+    action = "TERMINATED" if outcome == "SUCCESS" else f"TERMINATE_{outcome}"
+    orchestrator.db_manager.add_host_followup(incident_id, action, outcome, message)
+    orchestrator.db_manager.save_audit_log(
+        agent_name="User", action=f"TERMINATE_PROCESS ({outcome})",
+        details=f"PID={process.pid}, Process={process.process_name}, Exe={process.exe_path}, Incident={incident_id}",
+        level="WARNING",
+    )
+    return {"status": outcome, "message": message}
 
 
 

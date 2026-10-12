@@ -83,7 +83,8 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
   if (response.status === 401) response = await authorizedFetch(url, options, true);
 
   if (!response.ok) {
-    throw new Error(`API Error: ${response.status} ${response.statusText}`);
+    const detail = await response.json().then((b) => (typeof b?.detail === 'string' ? b.detail : ''), () => '');
+    throw new Error(detail || `API Error: ${response.status} ${response.statusText}`);
   }
 
   return response.json();

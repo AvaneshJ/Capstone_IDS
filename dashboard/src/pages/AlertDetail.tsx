@@ -16,6 +16,8 @@ import {
   Monitor,
   ExternalLink,
   Lightbulb,
+  OctagonX,
+  BadgeCheck,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
@@ -23,13 +25,16 @@ import { toast } from 'sonner';
 
 import { ExpertContext } from '../App';
 import { Skeleton, ErrorState, RiskGauge, TechDetails, ConfirmModal, StoryFlow, SeverityBadge, IconTile } from '../components/index';
-import { getIncidentDetail, getHostIncidents, unblockIP, generateReport, getReportDownloadUrl } from '../api/endpoints';
-import { translateThreat, translateFileType, translateHostAction, translateNetworkAction, formatDuration, translateIP, translatePort, mitreLink } from '../lib/translate';
+import { getIncidentDetail, getHostIncidents, unblockIP, generateReport, getReportDownloadUrl, terminateHostProgram, trustHostProgram, type HostFollowup, type TrustScope } from '../api/endpoints';
+import { translateThreat, translateFileType, translateHostAction, translateNetworkAction, formatDuration, translateIP, translatePort, mitreLink, isTrustedAccess } from '../lib/translate';
 import { openDownload, openExternal } from '../lib/desktop';
 
 dayjs.extend(relativeTime);
 
 type ActionOutcome = 'done' | 'test' | 'failed' | 'other';
+
+// Mirrors hids/trust.py: these sign Windows itself (including script hosts), so they can't be trusted wholesale.
+const PLATFORM_PUBLISHERS = new Set(['microsoft windows', 'microsoft windows publisher', 'microsoft corporation']);
 
 interface AlertView {
   source: 'network' | 'computer';
@@ -43,6 +48,10 @@ interface AlertView {
   dstIp?: string;
   dstPort?: number;
   processName?: string;
+  pid?: number;
+  exePath?: string;
+  trust?: { level?: string; publisher?: string; signature?: string; reason?: string } | null;
+  followups?: HostFollowup[];
   filePath?: string;
   fileType?: string;
   actionLabel: string;
@@ -126,6 +135,10 @@ function hostView(row: any): AlertView {
     riskScore: row.risk_score ?? 0,
     confidence: row.confidence ?? null,
     processName: row.process_name,
+    pid: row.pid,
+    exePath: details.process?.exe_path || '',
+    trust: details.raw_event?.trust ?? null,
+    followups: row.followups ?? [],
     filePath: row.file_path,
     fileType: row.file_type,
     actionLabel: translateHostAction(row.soar_action),
@@ -159,6 +172,9 @@ export default function AlertDetail() {
   const queryClient = useQueryClient();
   const { source, id } = useParams<{ source: string; id: string }>();
   const [unblockModalOpen, setUnblockModalOpen] = useState(false);
+  const [stopModalOpen, setStopModalOpen] = useState(false);
+  const [trustScope, setTrustScope] = useState<TrustScope | null>(null);
+  const [busy, setBusy] = useState(false);
   const [isReviewed, setIsReviewed] = useState(localStorage.getItem(`sentinel_reviewed_${id}`) === 'true');
 
   const { data: view, isLoading, error, refetch } = useQuery({
@@ -230,14 +246,55 @@ export default function AlertDetail() {
     }
   };
 
+  const refreshHost = () => {
+    queryClient.invalidateQueries({ queryKey: ['incident-detail', source, id] });
+    queryClient.invalidateQueries({ queryKey: ['host-incidents'] });
+    queryClient.invalidateQueries({ queryKey: ['trusted-programs'] });
+  };
+
+  const handleStop = async () => {
+    setBusy(true);
+    try {
+      const res = await terminateHostProgram(view.incidentId);
+      if (res.status === 'SUCCESS' || res.status === 'ALREADY_EXITED') toast.success(res.message);
+      else toast.error(res.message);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't stop the program");
+    } finally {
+      setBusy(false);
+      refreshHost();
+    }
+  };
+
+  const handleTrust = async (scope: TrustScope) => {
+    setBusy(true);
+    try {
+      const res = await trustHostProgram(view.incidentId, scope);
+      toast.success('Marked as safe', { description: `${res.rule.label} will no longer raise alerts. You can undo this in Settings.` });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't mark this program as safe");
+    } finally {
+      setBusy(false);
+      refreshHost();
+    }
+  };
+
   const threatInfo = translateThreat(view.threatRaw);
   const time = dayjs.unix(view.timestamp);
   const targetFile = translateFileType(view.fileType, view.filePath);
   const isNetwork = view.source === 'network';
   const touchedFile = !isNetwork && !!view.filePath;
+  const trusted = isTrustedAccess(view.threatRaw);
+  const signedBy = view.trust?.signature === 'valid' ? view.trust.publisher : '';
+  const publisherTrustable = !!signedBy && !PLATFORM_PUBLISHERS.has(signedBy.toLowerCase());
+  const followups = view.followups ?? [];
+  const markedSafe = followups.some((f) => f.action === 'MARKED_SAFE');
+  const stopped = followups.some((f) => f.action === 'TERMINATED' || f.status === 'ALREADY_EXITED');
+  const canStop = !isNetwork && !!view.pid && view.pid > 4 && !stopped && view.outcome !== 'done';
 
   let summary: string = threatInfo.explanation;
-  if (touchedFile) summary = `${view.processName || 'A program'} tried to open ${targetFile.charAt(0).toLowerCase()}${targetFile.slice(1)}. ${summary}`;
+  if (touchedFile && trusted) summary = `${view.processName || 'A program'}${signedBy ? ` (signed by ${signedBy})` : ''} opened ${targetFile.charAt(0).toLowerCase()}${targetFile.slice(1)}. ${summary}`;
+  else if (touchedFile) summary = `${view.processName || 'A program'} tried to open ${targetFile.charAt(0).toLowerCase()}${targetFile.slice(1)}. ${summary}`;
   else if (!isNetwork) summary = `${view.processName || 'A program'} behaved unusually. ${summary}`;
   const aiSummary = expert ? view.llm?.summary : undefined;
 
@@ -249,7 +306,7 @@ export default function AlertDetail() {
 
   const expertAdvice = expert ? view.llm?.soc_recommendations ?? [] : [];
   let advice: string[] = [threatInfo.advice, ...expertAdvice].filter(Boolean);
-  if (view.threatRaw.toLowerCase().includes('stealer') || touchedFile) {
+  if (!trusted && !markedSafe && (view.threatRaw.toLowerCase().includes('stealer') || touchedFile)) {
     advice = [
       'Change the passwords saved in your browser.',
       'Sign out of all sessions on important websites (email, bank).',
@@ -263,7 +320,7 @@ export default function AlertDetail() {
 
   const outcome = {
     done: { icon: isNetwork ? CheckCircle2 : ShieldCheck, tone: 'safe' as const, title: isNetwork ? `Blocked this address${blockedFor}` : view.actionLabel, note: 'Handled automatically. No action needed from you.' },
-    test: { icon: FlaskConical, tone: 'accent' as const, title: `Test mode: we would have ${isNetwork ? `blocked this address${blockedFor}` : view.actionLabel.toLowerCase()}`, note: 'SentinelAI is in safe test mode, so nothing on your computer was changed.' },
+    test: { icon: FlaskConical, tone: 'accent' as const, title: `Test mode: we would have ${isNetwork ? `blocked this address${blockedFor}` : view.actionLabel.toLowerCase()}`, note: `SentinelAI is in safe test mode, so nothing on your computer was changed.${isNetwork ? '' : ' You can still stop the program yourself below.'}` },
     failed: { icon: XCircle, tone: 'danger' as const, title: "We tried to stop it but couldn't", note: 'Please follow the steps on the right, or contact IT support.' },
     other: { icon: Info, tone: 'neutral' as const, title: view.actionLabel, note: view.remediationNotes || '' },
   }[view.outcome];
@@ -398,6 +455,41 @@ export default function AlertDetail() {
               <Unlock size={14} /> Unblock this address
             </button>
           )}
+          {followups.length > 0 && (
+            <ul className="mt-3 space-y-1.5">
+              {followups.map((f, idx) => (
+                <li key={idx} className="text-[13px] text-fg-muted flex items-start gap-2">
+                  {f.action === 'MARKED_SAFE' ? <BadgeCheck size={14} className="text-safe shrink-0 mt-0.5" /> : f.action === 'TERMINATED' ? <OctagonX size={14} className="text-safe shrink-0 mt-0.5" /> : <Info size={14} className="text-fg-subtle shrink-0 mt-0.5" />}
+                  <span>
+                    {f.action === 'MARKED_SAFE' ? `You marked this as safe: ${f.detail}` : f.detail}
+                    <span className="text-fg-subtle"> · {dayjs.unix(f.created_at).fromNow()}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {!isNetwork && (canStop || !markedSafe) && (
+            <div className="mt-4 pt-4 border-t border-line">
+              <div className="text-[11px] text-fg-subtle mb-2">Your decision</div>
+              <div className="flex flex-wrap gap-2">
+                {canStop && (
+                  <button disabled={busy} onClick={() => setStopModalOpen(true)} className="btn btn-secondary btn-sm text-danger">
+                    <OctagonX size={14} /> Stop this program now
+                  </button>
+                )}
+                {!markedSafe && publisherTrustable && (
+                  <button disabled={busy} onClick={() => setTrustScope('publisher')} className="btn btn-secondary btn-sm">
+                    <BadgeCheck size={14} /> Trust programs from {signedBy}
+                  </button>
+                )}
+                {!markedSafe && (
+                  <button disabled={busy} onClick={() => setTrustScope(view.trust ? 'file' : 'auto')} className="btn btn-ghost btn-sm">
+                    <ShieldCheck size={14} /> {publisherTrustable ? 'Trust only this file' : 'This is safe, trust this program'}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </StepCard>
 
         <StepCard n={4} title="What should you do?">
@@ -427,6 +519,33 @@ export default function AlertDetail() {
         variant="danger"
         onConfirm={handleUnblock}
         onClose={() => setUnblockModalOpen(false)}
+      />
+
+      <ConfirmModal
+        isOpen={stopModalOpen}
+        title={`Stop ${view.processName || 'this program'} now?`}
+        message={`This really closes the program (PID ${view.pid}), even though SentinelAI is in test mode. Anything unsaved in it will be lost. SentinelAI first checks that the PID still belongs to the same program, so nothing else gets closed by mistake.`}
+        cancelLabel="Leave it running"
+        confirmLabel="Stop it"
+        variant="danger"
+        onConfirm={handleStop}
+        onClose={() => setStopModalOpen(false)}
+      />
+
+      <ConfirmModal
+        isOpen={trustScope !== null}
+        title={trustScope === 'publisher' ? `Trust every program signed by ${signedBy}?` : `Trust ${view.processName || 'this program'}?`}
+        message={
+          trustScope === 'publisher'
+            ? `Any program carrying a valid ${signedBy} digital signature will stop raising alerts, including after updates. Only do this for software you installed on purpose.`
+            : trustScope === 'auto'
+            ? `If the program has a valid digital signature from a software company, SentinelAI will trust that company's programs (this survives updates). Otherwise it trusts only this exact file. Windows' own script tools can never be trusted this way.`
+            : `Only this exact file${view.exePath ? ` (${view.exePath})` : ''} will stop raising alerts. If the file changes, for example after an update or if malware replaces it, SentinelAI will warn you again.`
+        }
+        cancelLabel="Cancel"
+        confirmLabel="Yes, it's safe"
+        onConfirm={() => trustScope && handleTrust(trustScope)}
+        onClose={() => setTrustScope(null)}
       />
     </div>
   );

@@ -5,7 +5,10 @@ export interface Metrics { total_flows_analyzed: number; total_threats_detected:
 export interface Offender { src_ip: string; incident_count: number; max_risk_score: number; attack_types: string[]; last_seen: number; }
 export interface IncidentRow { incident_id: string; timestamp: number; src_ip: string; dst_ip: string; src_port: number; dst_port: number; protocol: number; attack_type: string; confidence: number; risk_score: number; severity: string; action_taken: string; mitre_technique_id: string; mitre_technique_name: string; explanation: string; raw_json: string; status: string; }
 export interface IncidentsResponse { count: number; incidents: IncidentRow[]; }
-export interface HostIncidentRow { incident_id: string; timestamp: number; hostname: string; pid: number; process_name: string; parent_name: string; cpu_percent: number; memory_mb: number; file_path: string; file_type: string; event_type: string; classification: string; confidence: number; risk_score: number; severity: string; mitre_technique_id: string; mitre_technique_name: string; soar_action: string; action_status: string; remediation_notes: string; raw_json: string; }
+export interface HostIncidentRow { incident_id: string; timestamp: number; hostname: string; pid: number; process_name: string; parent_name: string; cpu_percent: number; memory_mb: number; file_path: string; file_type: string; event_type: string; classification: string; confidence: number; risk_score: number; severity: string; mitre_technique_id: string; mitre_technique_name: string; soar_action: string; action_status: string; remediation_notes: string; raw_json: string; followups?: HostFollowup[]; }
+export interface HostFollowup { action: string; status: string; detail: string; created_at: number; }
+export interface TrustRule { id: number; kind: 'hash' | 'publisher'; value: string; label: string; created_at: number; source_incident: string | null; }
+export type TrustScope = 'auto' | 'publisher' | 'file';
 export interface HostIncidentsResponse { count: number; host_incidents: HostIncidentRow[]; }
 export interface BlockedIP { rule_id: string; ip_address: string; direction: string; block_timestamp: number; expiry_timestamp: number | null; reason: string; status: string; command_executed: string; }
 export interface BlocksResponse { count: number; blocked_ips: BlockedIP[]; }
@@ -16,7 +19,7 @@ export interface LiveStatus {
     flows_checked: number; threats_found: number; incidents_created: number; repeats_grouped: number;
     outbound_flagged: number; ignored_noise: number; dropped: number; last_flow_at: number | null; last_threat_at: number | null;
   };
-  host: { process_sensor: SensorState; file_sensor: SensorState; tamper_sensor?: SensorState; alerts: number; repeats_grouped: number; trusted_location_skipped: number };
+  host: { process_sensor: SensorState; file_sensor: SensorState; tamper_sensor?: SensorState; alerts: number; repeats_grouped: number; trusted_location_skipped: number; allowed_by_you?: number };
   elevated?: boolean;
   response_mode: 'test' | 'live';
 }
@@ -67,6 +70,26 @@ export async function getHostIncidents(limit?: number, classification?: string):
   const path = query ? `/api/host/incidents?${query}` : '/api/host/incidents';
   
   return apiFetch<HostIncidentsResponse>(path);
+}
+
+export async function getTrustedPrograms(): Promise<{ count: number; rules: TrustRule[] }> {
+  return apiFetch('/api/trust');
+}
+
+export async function removeTrustedProgram(id: number): Promise<{ status: string }> {
+  return apiFetch(`/api/trust/${id}`, { method: 'DELETE' });
+}
+
+export async function trustHostProgram(incidentId: string, scope: TrustScope = 'auto'): Promise<{ status: string; rule: TrustRule }> {
+  return apiFetch(`/api/host/incidents/${encodeURIComponent(incidentId)}/trust`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope }),
+  });
+}
+
+export async function terminateHostProgram(incidentId: string): Promise<{ status: string; message: string }> {
+  return apiFetch(`/api/host/incidents/${encodeURIComponent(incidentId)}/terminate`, { method: 'POST' });
 }
 
 export async function getBlocks(): Promise<BlocksResponse> {

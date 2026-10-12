@@ -1,10 +1,16 @@
 ﻿import { useContext, useEffect, useState, type ReactNode } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import { toast } from 'sonner';
 import { ExpertContext } from '../App';
-import { Bell, Volume2, Eye, MonitorDown, Power, Info, PanelsTopLeft } from 'lucide-react';
+import { Bell, Volume2, Eye, MonitorDown, Power, Info, PanelsTopLeft, BadgeCheck, FileCheck2, Trash2 } from 'lucide-react';
 import { Panel, Toggle, IconTile, Segmented } from '../components/ui';
+import { ConfirmModal } from '../components/ConfirmModal';
 import { desktop, isDesktop, type AppInfo, type DesktopSettings, type EngineState } from '../lib/desktop';
 import { playAlertSound } from '../lib/sound';
 import { API_BASE } from '../api/client';
+import { getTrustedPrograms, removeTrustedProgram, type TrustRule } from '../api/endpoints';
 
 function Row({ icon, tone, title, description, control }: { icon: ReactNode; tone: 'accent' | 'mint' | 'sun' | 'rose' | 'info'; title: string; description: string; control: ReactNode }) {
   return (
@@ -16,6 +22,68 @@ function Row({ icon, tone, title, description, control }: { icon: ReactNode; ton
       </div>
       <div className="shrink-0">{control}</div>
     </div>
+  );
+}
+
+dayjs.extend(relativeTime);
+
+function TrustedPrograms() {
+  const { expert } = useContext(ExpertContext);
+  const queryClient = useQueryClient();
+  const [removing, setRemoving] = useState<TrustRule | null>(null);
+  const { data, isLoading, isError } = useQuery({ queryKey: ['trusted-programs'], queryFn: getTrustedPrograms });
+  const rules = data?.rules ?? [];
+
+  const remove = async (rule: TrustRule) => {
+    try {
+      await removeTrustedProgram(rule.id);
+      toast.success('Removed', { description: `${rule.label} will raise alerts again.` });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Couldn't remove it");
+    }
+    queryClient.invalidateQueries({ queryKey: ['trusted-programs'] });
+  };
+
+  return (
+    <Panel
+      title="Trusted programs"
+      info="Programs you marked as safe from an alert. SentinelAI still watches them but stops alerting. A publisher entry covers every program with that company's valid digital signature; a file entry covers one exact file and stops matching if the file changes."
+    >
+      {isLoading ? (
+        <p className="text-[13px] text-fg-muted">Loading…</p>
+      ) : isError ? (
+        <p className="text-[13px] text-fg-muted">Couldn't load the list. Is the protection engine running?</p>
+      ) : rules.length === 0 ? (
+        <p className="text-[13px] text-fg-muted">
+          Nothing yet. If an alert is about software you trust, open it and choose "Trust this program".
+        </p>
+      ) : (
+        <div className="divide-y divide-line">
+          {rules.map((rule) => (
+            <Row
+              key={rule.id}
+              icon={rule.kind === 'publisher' ? <BadgeCheck size={16} /> : <FileCheck2 size={16} />}
+              tone={rule.kind === 'publisher' ? 'mint' : 'info'}
+              title={rule.label || rule.value}
+              description={`${rule.kind === 'publisher' ? 'Any program with this digital signature' : 'This exact file only'} · added ${dayjs.unix(rule.created_at).fromNow()}${expert && rule.kind === 'hash' ? ` · SHA-256 ${rule.value.slice(0, 16)}…` : ''}`}
+              control={
+                <button onClick={() => setRemoving(rule)} className="btn btn-ghost btn-sm" aria-label={`Stop trusting ${rule.label}`}>
+                  <Trash2 size={14} /> Remove
+                </button>
+              }
+            />
+          ))}
+        </div>
+      )}
+      <ConfirmModal
+        isOpen={removing !== null}
+        title="Stop trusting this?"
+        message={`${removing?.label ?? 'This program'} will raise alerts again the next time it opens a protected file.`}
+        confirmLabel="Remove"
+        onConfirm={() => removing && remove(removing)}
+        onClose={() => setRemoving(null)}
+      />
+    </Panel>
   );
 }
 
@@ -113,6 +181,8 @@ export function Settings() {
             />
           </div>
         </Panel>
+
+        <TrustedPrograms />
 
         {isDesktop && desk && (
           <Panel title="Desktop app">

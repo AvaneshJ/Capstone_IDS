@@ -73,6 +73,11 @@ LEGIT_BROWSERS = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera
 # Suspicious parent processes commonly used to spawn stealers
 SUSPICIOUS_PARENTS = {"cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe"}
 
+# Trust level attached by the live monitor (hids/trust.py) and what a trusted vendor's access becomes
+TRUSTED_VENDOR = "trusted_vendor"
+TRUSTED_ACCESS = "TrustedAccess"
+TRUSTED_RISK_CAP = 3.5
+
 
 class HostSOARAgent(BaseAgent):
     """
@@ -128,8 +133,21 @@ class HostSOARAgent(BaseAgent):
             mitre_id, mitre_name, mitre_tactic = self._map_mitre_attack(file_event, classification)
 
             # 5. Formulate SOAR Action Plan
-            soar_action, action_status, remediation = self._plan_and_execute_response(process_info, file_event, classification, risk_score)
+            trust = raw_data.get("trust") if isinstance(raw_data.get("trust"), dict) else {}
+            if classification != "Normal" and trust.get("level") == TRUSTED_VENDOR:
+                # Reputation: signed vendor binary in an admin-only folder. Still reported, never auto-stopped.
+                classification = TRUSTED_ACCESS
+                risk_score, severity = min(risk_score, TRUSTED_RISK_CAP), SeverityLevel.LOW
+                soar_action, action_status = HostActionType.ALERT_ONLY, "NOT_STOPPED (trusted publisher)"
+                remediation = (
+                    f"{process_info.process_name} is signed by {trust.get('publisher') or 'a verified publisher'} and installed "
+                    "in a protected folder, so it was not stopped. If you don't recognise it, open the alert and stop it."
+                )
+            else:
+                soar_action, action_status, remediation = self._plan_and_execute_response(process_info, file_event, classification, risk_score)
             reasons = self._explain(process_info, file_event, classification, raw_data.get("reasons"))
+            if trust.get("reason") and classification != "Normal":
+                reasons.append(f"Publisher check: {trust['reason']}")
 
             # 6. Assemble Final HostIncident
             incident = HostIncident(
@@ -407,6 +425,18 @@ class HostSOARAgent(BaseAgent):
             status = f"FAILED (Could not terminate {label}: {detail})"
             remediation = f"Failed to terminate PID {process.pid}. Operator manual intervention required."
         return HostActionType.TERMINATE_PROCESS, status, remediation
+
+    def terminate_process(self, process: HostProcessInfo) -> tuple[str, str]:
+        """User-requested stop from the dashboard: real even in test mode, same identity checks as containment."""
+        if process.pid <= 4:
+            return "REFUSED", "Windows system process"
+        if is_own_process(process.pid) or is_own_binary(process.exe_path):
+            return "REFUSED", "SentinelAI's own process"
+        outcome, detail = self._terminate_pid(process)
+        if outcome == "SUCCESS":
+            self.total_processes_killed += 1
+            logger.warning("[HOST SOAR] User stopped PID %d (%s)", process.pid, process.process_name)
+        return outcome, detail
 
     def _terminate_pid(self, process: HostProcessInfo) -> tuple[str, str]:
         """

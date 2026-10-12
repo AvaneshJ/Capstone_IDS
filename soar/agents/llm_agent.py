@@ -294,6 +294,11 @@ class LLMExplanationAgent(BaseAgent):
                 f"Otherwise scan '{proc.exe_path or proc.process_name}' with Defender.",
                 "Your saved passwords and cookies were not touched, so there is no need to change them.",
             ]
+        elif incident.classification == "TrustedAccess":
+            recs = [
+                f"If you installed the software behind {proc.process_name}, mark it as trusted to stop these notices.",
+                f"If you don't recognise it, stop it from the alert and uninstall the software it belongs to.",
+            ]
         else:
             recs = ["No action required. Event retained in the host audit trail."]
 

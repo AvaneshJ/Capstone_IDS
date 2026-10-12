@@ -43,6 +43,8 @@ PORTSCAN_MIN_PORTS = 15
 PORTSCAN_WINDOW = 20.0
 PORTSCAN_MODEL_VERSION = "live_fanout_rule"
 HOST_ALERT_COOLDOWN = 600.0
+# A trusted vendor reading a protected file is reported once a day per (program, file kind).
+TRUSTED_VENDOR_COOLDOWN = 24 * 3600.0
 MAX_INCIDENTS_PER_MINUTE = 30
 FLUSH_INTERVAL = 10.0
 LOCAL_IP_REFRESH = 60.0
@@ -111,7 +113,9 @@ class LiveMonitor:
         self.process_state = "stopped"
         self.file_state = "stopped"
         self._last_host_alert: Dict[str, float] = {}
-        self.host_stats = {"alerts": 0, "repeats_grouped": 0, "trusted_location_skipped": 0}
+        self._last_trusted_alert: Dict[Tuple[str, str], float] = {}
+        self._trust_rules: Optional[list] = None
+        self.host_stats = {"alerts": 0, "repeats_grouped": 0, "trusted_location_skipped": 0, "allowed_by_you": 0}
 
         # Self-protection hooks (set by the API server): SensorWatchdog and tamper finding sink
         self.watchdog: Any = None
@@ -432,14 +436,28 @@ class LiveMonitor:
         binaries started from a shell (conhost.exe, ...) sit just past its threshold.
         """
         name = str(event.get("process_name") or "").lower()
+        exe = str(event.get("exe_path") or "")
         now = time.time()
         touched_file = bool(event.get("file_path"))
-        if not touched_file and not _user_writable(str(event.get("exe_path") or "")):
+        if not touched_file and not _user_writable(exe):
             self.host_stats["trusted_location_skipped"] += 1
             return None
         if not touched_file and now - self._last_host_alert.get(name, 0.0) < HOST_ALERT_COOLDOWN:
             self.host_stats["repeats_grouped"] += 1
             return None
+
+        verdict = self._trust_verdict(exe)
+        if verdict is not None:
+            if verdict.level == "allowed":
+                self.host_stats["allowed_by_you"] += 1
+                return None
+            event["trust"] = verdict.to_dict()
+            if touched_file and verdict.level == "trusted_vendor":
+                key = (os.path.normcase(exe), str(event.get("file_type") or event.get("file_path")))
+                if now - self._last_trusted_alert.get(key, 0.0) < TRUSTED_VENDOR_COOLDOWN:
+                    self.host_stats["repeats_grouped"] += 1
+                    return None
+                self._last_trusted_alert[key] = now
         self._last_host_alert[name] = now
         event.setdefault("file_path", "")
         try:
@@ -454,6 +472,23 @@ class LiveMonitor:
         )
         self._notify("NEW_HOST_INCIDENT", incident.to_dict())
         return incident
+
+    def reload_trust_rules(self) -> None:
+        """Call after the user adds or removes a trusted program."""
+        self._trust_rules = None
+
+    def _trust_verdict(self, exe_path: str) -> Optional[Any]:
+        if not exe_path:
+            return None
+        try:
+            from hids.trust import evaluate
+
+            if self._trust_rules is None:
+                self._trust_rules = self.orch.db_manager.get_trusted_programs()
+            return evaluate(exe_path, self._trust_rules)
+        except Exception as exc:
+            logger.debug("Trust check failed for %s: %s", exe_path, exc)
+            return None
 
     # -------------------------------------------------------------
     # Status

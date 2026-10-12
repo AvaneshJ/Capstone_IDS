@@ -149,3 +149,27 @@ CREATE TABLE IF NOT EXISTS evidence_chain (
 
 CREATE INDEX IF NOT EXISTS idx_evidence_chain_record ON evidence_chain(table_name, record_key);
 
+-- 9. Programs the user marked as safe (host-alert allow rules; see hids/trust.py)
+CREATE TABLE IF NOT EXISTS trusted_programs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('hash', 'publisher')),  -- exact file SHA-256 or code-signing publisher
+    value TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    source_incident TEXT,
+    UNIQUE (kind, value)
+);
+
+-- 10. What happened after a host alert (user marked safe, user stopped the program, ...).
+-- Kept apart from host_incidents so chained incident rows are never edited.
+CREATE TABLE IF NOT EXISTS host_followups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id TEXT NOT NULL,
+    action TEXT NOT NULL,          -- MARKED_SAFE | TERMINATED | TERMINATE_FAILED | ...
+    status TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_host_followups_incident ON host_followups(incident_id);
+

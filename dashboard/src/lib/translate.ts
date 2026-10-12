@@ -32,6 +32,7 @@ const THREAT_MAP: Record<string, ThreatInfo> = {
   infostealer:    { friendlyName: 'Password-stealing program', explanation: 'A program secretly opened your saved passwords or login cookies.', advice: 'Change your saved passwords, sign out of all sessions, run antivirus.', icon: 'KeyRound' },
   ransomware:     { friendlyName: 'Ransomware (file-locking program)', explanation: 'A program tried to lock your files to demand money.', advice: 'Disconnect from the internet and contact IT support.', icon: 'Lock' },
   malware:        { friendlyName: 'Harmful program', explanation: 'A program behaving like malware.', advice: 'Run a full antivirus scan.', icon: 'Bug' },
+  trustedaccess:  { friendlyName: 'Trusted program opened a protected file', explanation: 'A digitally signed program from a known publisher, installed in a protected Windows folder, opened a file that normally only your browser reads. Security and password-manager tools do this, so it was not stopped.', advice: 'If you installed this software, mark it as trusted to stop these notices. If you don\'t recognise it, stop it and uninstall it.', icon: 'BadgeCheck' },
   tamper:         { friendlyName: 'Attack on SentinelAI itself', explanation: 'Something tried to switch off, blind or modify SentinelAI (stopping it, changing its files, or erasing logs).', advice: 'Run a full antivirus scan, then open System health to see what was changed. Contact IT support if you did not do this.', icon: 'ShieldAlert' },
 };
 
@@ -54,6 +55,10 @@ export function translateThreat(raw: string | null | undefined): ThreatInfo {
     if (key.includes(k.replace(/[\s_-]+/g, ''))) return v;
   }
   return DEFAULT_THREAT;
+}
+
+export function isTrustedAccess(raw: string | null | undefined): boolean {
+  return (raw || '').toLowerCase() === 'trustedaccess';
 }
 
 export function isBenign(raw: string | null | undefined): boolean {
@@ -139,6 +144,7 @@ export function translateActionStatus(raw: string | null | undefined): { label: 
   if (upper.includes('FAILED'))           return { label: "Couldn't complete. Please act.", tagClass: 'tag-danger' };
   if (upper.includes('PENDING'))          return { label: 'In progress', tagClass: 'tag-neutral' };
   if (upper.includes('ALERT_DISPATCHED')) return { label: 'Alert sent', tagClass: 'tag-warn' };
+  if (upper.includes('NOT_STOPPED'))      return { label: 'Trusted publisher, not stopped', tagClass: 'tag-info' };
   return { label: raw, tagClass: 'tag-neutral' };
 }
 

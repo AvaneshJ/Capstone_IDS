@@ -529,6 +529,75 @@ class DatabaseManager:
                 logger.error("Failed to add whitelist IP %s: %s", ip_or_cidr, exc)
                 return False
 
+    # -------------------------------------------------------------
+    # Trusted programs (host-alert allow rules) and alert follow-ups
+    # -------------------------------------------------------------
+
+    def add_trusted_program(self, kind: str, value: str, label: str = "", source_incident: str = "") -> Optional[Dict[str, Any]]:
+        """Insert (or return the existing) allow rule."""
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO trusted_programs (kind, value, label, created_at, source_incident) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (kind, value, label, time.time(), source_incident or None),
+                    )
+                    conn.commit()
+                    row = conn.execute("SELECT * FROM trusted_programs WHERE kind = ? AND value = ?", (kind, value)).fetchone()
+                    return dict(row) if row else None
+            except Exception as exc:
+                logger.error("Failed to add trusted program %s=%s: %s", kind, value, exc)
+                return None
+
+    def get_trusted_programs(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            with self._get_connection() as conn:
+                return [dict(r) for r in conn.execute("SELECT * FROM trusted_programs ORDER BY created_at DESC")]
+
+    def remove_trusted_program(self, rule_id: int) -> bool:
+        with self._lock:
+            with self._get_connection() as conn:
+                cur = conn.execute("DELETE FROM trusted_programs WHERE id = ?", (rule_id,))
+                conn.commit()
+                return cur.rowcount > 0
+
+    def add_host_followup(self, incident_id: str, action: str, status: str, detail: str = "") -> None:
+        with self._lock:
+            try:
+                with self._get_connection() as conn:
+                    conn.execute(
+                        "INSERT INTO host_followups (incident_id, action, status, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+                        (incident_id, action, status, detail, time.time()),
+                    )
+                    conn.commit()
+            except Exception as exc:
+                logger.error("Failed to record follow-up for %s: %s", incident_id, exc)
+
+    def get_host_followups(self, incident_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+        if not incident_ids:
+            return {}
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        with self._lock:
+            with self._get_connection() as conn:
+                for start in range(0, len(incident_ids), 500):
+                    chunk = incident_ids[start:start + 500]
+                    marks = ",".join("?" * len(chunk))
+                    rows = conn.execute(
+                        f"SELECT incident_id, action, status, detail, created_at FROM host_followups "
+                        f"WHERE incident_id IN ({marks}) ORDER BY created_at",
+                        chunk,
+                    )
+                    for r in rows:
+                        out.setdefault(r["incident_id"], []).append(dict(r))
+        return out
+
+    def get_host_incident(self, incident_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            with self._get_connection() as conn:
+                row = conn.execute("SELECT * FROM host_incidents WHERE incident_id = ?", (incident_id,)).fetchone()
+                return dict(row) if row else None
+
     def get_top_offending_ips(self, limit: int = 5) -> List[Dict[str, Any]]:
         """Aggregate top offending IPs by incident frequency and highest risk score."""
         with self._lock:
