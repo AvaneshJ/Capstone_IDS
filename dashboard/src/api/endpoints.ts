@@ -1,6 +1,4 @@
-import { apiFetch } from './client';
-
-const BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+import { apiFetch, withEnvToken, API_BASE as BASE } from './client';
 
 // Types
 export interface Metrics { total_flows_analyzed: number; total_threats_detected: number; active_firewall_blocks: number; average_threat_risk: number; attack_distribution: Record<string, number>; top_offenders: Offender[]; }
@@ -11,7 +9,29 @@ export interface HostIncidentRow { incident_id: string; timestamp: number; hostn
 export interface HostIncidentsResponse { count: number; host_incidents: HostIncidentRow[]; }
 export interface BlockedIP { rule_id: string; ip_address: string; direction: string; block_timestamp: number; expiry_timestamp: number | null; reason: string; status: string; command_executed: string; }
 export interface BlocksResponse { count: number; blocked_ips: BlockedIP[]; }
-export interface SystemStatus { timestamp: number; total_flows: number; total_threats: number; total_blocked_ips: number; total_alerts: number; active_firewall_rules: number; cpu_percent: number; memory_percent: number; uptime_seconds: number; agent_statuses: Record<string, string>; }
+export type SensorState = 'running' | 'unavailable' | 'error' | 'stopped' | 'disabled' | 'needs_admin';
+export interface LiveStatus {
+  network: {
+    state: SensorState; reason: string; backend?: '' | 'npcap' | 'windivert'; interfaces: string[]; packets_seen: number; started_at: number | null; queue: number;
+    flows_checked: number; threats_found: number; incidents_created: number; repeats_grouped: number;
+    outbound_flagged: number; ignored_noise: number; dropped: number; last_flow_at: number | null; last_threat_at: number | null;
+  };
+  host: { process_sensor: SensorState; file_sensor: SensorState; tamper_sensor?: SensorState; alerts: number; repeats_grouped: number; trusted_location_skipped: number };
+  elevated?: boolean;
+  response_mode: 'test' | 'live';
+}
+export interface IntegrityReport { state: 'ok' | 'tampered' | 'bad_signature' | 'no_manifest'; checked_at: number; files_checked: number; modified: string[]; missing: string[]; added: string[]; manifest_created_at: number | null; }
+export interface EvidenceChainReport { ok: boolean; entries: number; problem_count: number; problems: string[]; checked_at: number; }
+export interface SensorHeartbeat { name: string; state: 'alive' | 'silenced'; last_seen: number; seconds_since: number; timeout: number | null; silenced_since: number | null; reason: string; beats: number; }
+export interface TamperEvent { kind: string; title: string; details: string; mitre: string; timestamp: number; incident_id: string; }
+export interface SelfProtectionStatus {
+  integrity: IntegrityReport | null;
+  evidence_chain: EvidenceChainReport | null;
+  watchdog: { sensors: Record<string, SensorHeartbeat>; silenced: string[] };
+  recent_tamper_events: TamperEvent[];
+  auth_required: boolean;
+}
+export interface SystemStatus { timestamp: number; total_flows: number; total_threats: number; total_blocked_ips: number; total_alerts: number; active_firewall_rules: number; cpu_percent: number; memory_percent: number; uptime_seconds: number; agent_statuses: Record<string, string>; test_mode?: boolean; live?: LiveStatus; self_protection?: SelfProtectionStatus; }
 export interface ReportResponse { status: string; filename: string; download_url: string; }
 export interface IncidentDetail { incident_id: string; timestamp: number; status: string; flow: any; detection: any; threat: any; risk: any; action_plan: any; firewall_rule: any; llm_explanation: any; }
 
@@ -61,12 +81,24 @@ export async function getSystemStatus(): Promise<SystemStatus> {
   return apiFetch<SystemStatus>('/api/status');
 }
 
+export async function getLiveStatus(): Promise<LiveStatus> {
+  return apiFetch<LiveStatus>('/api/live/status');
+}
+
 export async function generateReport(): Promise<ReportResponse> {
   return apiFetch<ReportResponse>('/api/reports/generate', { method: 'POST' });
 }
 
 export function getReportDownloadUrl(filename: string): string {
-  return `${BASE}/api/reports/download/${filename}`;
+  return withEnvToken(`${BASE}/api/reports/download/${filename}`);
+}
+
+export async function getSelfProtectionStatus(): Promise<SelfProtectionStatus> {
+  return apiFetch<SelfProtectionStatus>('/api/selfprotect/status');
+}
+
+export async function runSelfProtectionChecks(): Promise<SelfProtectionStatus> {
+  return apiFetch<SelfProtectionStatus>('/api/selfprotect/verify', { method: 'POST' });
 }
 
 export async function ingestFlow(payload: any): Promise<any> {

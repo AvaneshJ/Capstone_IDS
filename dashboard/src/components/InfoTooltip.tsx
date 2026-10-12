@@ -1,16 +1,62 @@
-﻿import { Info } from 'lucide-react';
+﻿import { useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Info } from 'lucide-react';
 
 export interface InfoTooltipProps {
   text: string;
 }
 
+const WIDTH = 240;
+const GAP = 8;
+const EDGE = 12;
+
 export function InfoTooltip({ text }: InfoTooltipProps) {
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  // Rendered in a portal with fixed positioning: cards use overflow-hidden for their glow,
+  // which would otherwise clip the bubble.
+  useLayoutEffect(() => {
+    if (!open || !anchorRef.current || !tipRef.current) return;
+    const a = anchorRef.current.getBoundingClientRect();
+    const h = tipRef.current.offsetHeight;
+    const left = Math.min(Math.max(a.left + a.width / 2 - WIDTH / 2, EDGE), window.innerWidth - WIDTH - EDGE);
+    const above = a.top - GAP - h;
+    const top = above >= EDGE ? above : a.bottom + GAP;
+    setPos({ top, left });
+  }, [open, text]);
+
+  const show = () => setOpen(true);
+  const hide = () => {
+    setOpen(false);
+    setPos(null);
+  };
+
   return (
-    <div className="group relative flex items-center justify-center cursor-help">
-      <Info size={16} className="text-dark hover:text-dark dark:hover:text-slate-300 transition-colors" />
-      <div className="hidden group-hover:block absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-slate-800 dark:bg-slate-700 text-white text-xs rounded-lg shadow-xl text-center z-10 before:content-[''] before:absolute before:top-full before:left-1/2 before:-translate-x-1/2 before:border-4 before:border-transparent before:border-t-slate-800 dark:before:border-t-slate-700">
-        {text}
-      </div>
-    </div>
+    <span
+      ref={anchorRef}
+      className="group relative inline-flex items-center justify-center cursor-help"
+      tabIndex={0}
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onFocus={show}
+      onBlur={hide}
+    >
+      <Info size={14} className="text-fg-subtle group-hover:text-fg-muted transition-colors" />
+      {open &&
+        createPortal(
+          <div
+            ref={tipRef}
+            role="tooltip"
+            className="fixed z-[1000] pointer-events-none px-3 py-2 glass-strong text-xs font-normal text-fg-muted leading-relaxed text-left transition-opacity duration-150"
+            style={{ width: WIDTH, top: pos?.top ?? 0, left: pos?.left ?? 0, opacity: pos ? 1 : 0 }}
+          >
+            {text}
+          </div>,
+          document.body,
+        )}
+    </span>
   );
 }

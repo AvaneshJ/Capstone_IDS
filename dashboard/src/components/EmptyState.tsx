@@ -1,31 +1,26 @@
 ﻿import React from 'react';
+import { IconTile } from './ui';
 
 export interface EmptyStateProps {
   icon?: React.ReactNode;
   title: string;
   description?: string;
   action?: { label: string; onClick: () => void };
+  tone?: 'safe' | 'accent' | 'neutral';
 }
 
-export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
+export function EmptyState({ icon, title, description, action, tone = 'safe' }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center py-16 px-4 text-center rounded-2xl border-2 border-dashed border-slate-200 border-transparent bg-slate-50/50 /20">
+    <div className="flex flex-col items-center justify-center text-center px-6 py-12 rounded-xl border border-dashed border-line-strong bg-white/[0.02]">
       {icon && (
-        <div className="text-dark dark:text-dark mb-4 [&>svg]:w-16 [&>svg]:h-16">
+        <IconTile tone={tone} size="lg">
           {icon}
-        </div>
+        </IconTile>
       )}
-      <h3 className="text-xl font-bold text-slate-900  mb-2">{title}</h3>
-      {description && (
-        <p className="text-dark dark:text-dark max-w-md mx-auto mb-6">
-          {description}
-        </p>
-      )}
+      <h3 className="mt-4 text-base font-semibold text-fg">{title}</h3>
+      {description && <p className="mt-1 text-sm text-fg-muted max-w-md">{description}</p>}
       {action && (
-        <button 
-          onClick={action.onClick}
-          className="px-5 py-2.5 bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 transition-colors shadow-sm"
-        >
+        <button onClick={action.onClick} className="btn btn-primary mt-5">
           {action.label}
         </button>
       )}

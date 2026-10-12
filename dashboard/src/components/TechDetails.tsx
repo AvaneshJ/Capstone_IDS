@@ -41,11 +41,11 @@ function ProbabilityBars({ data }: { data: Record<string, number> }) {
     <div className="space-y-1.5 mt-1">
       {rows.map(([label, p]) => (
         <div key={label} className="flex items-center gap-3 text-xs">
-          <span className="w-32 shrink-0 truncate font-medium" title={label}>{label}</span>
-          <div className="flex-1 h-2 rounded-full bg-slate-200 overflow-hidden">
-            <div className="h-full rounded-full bg-indigo-500" style={{ width: `${Math.max(p * 100, 1)}%` }} />
+          <span className="w-32 shrink-0 truncate font-medium text-fg" title={label}>{label}</span>
+          <div className="flex-1 h-2 rounded-[3px] bg-white/8 overflow-hidden">
+            <div className="h-full rounded-[3px] bg-gradient-to-r from-accent-strong to-accent-soft" style={{ width: `${Math.max(p * 100, 1)}%` }} />
           </div>
-          <span className="w-12 text-right font-mono">{(p * 100).toFixed(1)}%</span>
+          <span className="w-12 text-right font-mono text-fg-muted">{(p * 100).toFixed(1)}%</span>
         </div>
       ))}
     </div>
@@ -75,12 +75,12 @@ function formatScalar(key: string, value: unknown): string {
 
 function FieldList({ data, depth = 0 }: { data: Record<string, unknown>; depth?: number }) {
   const entries = Object.entries(data).filter(([, v]) => !isEmpty(v));
-  if (entries.length === 0) return <p className="text-sm text-dark opacity-60">No data</p>;
+  if (entries.length === 0) return <p className="text-sm text-fg-subtle">No data</p>;
 
   return (
     <dl className={depth === 0
-      ? 'grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3'
-      : 'grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 pl-3 mt-1 border-l-2 border-slate-200'}>
+      ? 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-6 gap-y-3'
+      : 'grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 pl-3 mt-1 border-l-2 border-line-strong'}>
       {entries.map(([key, value]) => (
         <Field key={key} name={key} value={value} depth={depth} />
       ))}
@@ -92,9 +92,9 @@ function Field({ name, value, depth }: { name: string; value: unknown; depth: nu
   const isComplex = isPlainObject(value) || (Array.isArray(value) && value.some((v) => typeof v === 'object'));
 
   return (
-    <div className={`min-w-0 ${isComplex ? 'sm:col-span-2' : ''}`}>
-      <dt className="text-[11px] font-semibold text-dark/70 uppercase tracking-wider mb-0.5">{humanize(name)}</dt>
-      <dd className="text-sm text-dark break-words">
+    <div className={`min-w-0 ${isComplex ? 'md:col-span-2 xl:col-span-3' : ''}`}>
+      <dt className="text-[11px] font-semibold text-fg-subtle uppercase tracking-wider mb-0.5">{humanize(name)}</dt>
+      <dd className="text-sm text-fg break-words selectable">
         {isProbabilityMap(name, value) ? (
           <ProbabilityBars data={value} />
         ) : isPlainObject(value) ? (
@@ -135,35 +135,36 @@ export function TechDetails({ data, defaultOpen = false }: TechDetailsProps) {
   const sections = visible.filter(([, v]) => isPlainObject(v)) as [string, Record<string, unknown>][];
 
   return (
-    <div className="bg-slate-50  rounded-xl overflow-hidden border border-slate-200 border-transparent">
-      <button 
+    <div className="glass overflow-hidden animate-fade-up">
+      <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between p-4 bg-slate-100  hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors text-left focus:outline-none"
+        className="w-full flex items-center justify-between px-5 py-4 hover:bg-white/[0.03] transition-colors text-left focus:outline-none"
       >
-        <div className="flex items-center gap-2 font-semibold text-dark ">
-          {isOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+        <div className="flex items-center gap-2 text-[15px] font-semibold text-fg">
+          {isOpen ? <ChevronDown size={18} className="text-fg-muted" /> : <ChevronRight size={18} className="text-fg-muted" />}
           Technical details
+          <span className="text-xs font-normal text-fg-subtle">For IT support and security experts</span>
         </div>
-        <div 
+        <div
           onClick={handleCopy}
-          className="p-1.5 hover:bg-slate-300 dark:hover:bg-slate-600 rounded-md text-dark hover:text-slate-900 dark:hover:text-white transition-colors"
+          className="icon-btn w-8 h-8"
           title="Copy as JSON"
         >
-          {copied ? <Check size={16} className="text-emerald-500" /> : <Copy size={16} />}
+          {copied ? <Check size={15} className="text-safe" /> : <Copy size={15} />}
         </div>
       </button>
 
       {isOpen && (
-        <div className="p-4 space-y-4">
+        <div className="px-5 pb-5 space-y-3">
           {Object.keys(overview).length > 0 && (
-            <section className="bg-white/60 rounded-2xl p-4">
-              <h3 className="text-sm font-bold text-dark mb-3">Overview</h3>
+            <section className="glass-inset p-4">
+              <h3 className="text-sm font-semibold text-fg mb-3">Overview</h3>
               <FieldList data={overview} />
             </section>
           )}
           {sections.map(([key, value]) => (
-            <section key={key} className="bg-white/60 rounded-2xl p-4">
-              <h3 className="text-sm font-bold text-dark mb-3">{humanize(key)}</h3>
+            <section key={key} className="glass-inset p-4">
+              <h3 className="text-sm font-semibold text-fg mb-3">{humanize(key)}</h3>
               <FieldList data={value} />
             </section>
           ))}

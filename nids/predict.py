@@ -4,12 +4,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
-import joblib
 
+from config.integrity import load_verified
 from config.paths import MODEL_ENCODER, MODEL_XGB
 
-model = joblib.load(MODEL_XGB)
-le = joblib.load(MODEL_ENCODER)
+model = load_verified(MODEL_XGB)
+le = load_verified(MODEL_ENCODER)
 
 df = pd.read_csv("data/lab/ssh_attacks.csv")
 

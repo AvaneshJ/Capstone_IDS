@@ -1,9 +1,13 @@
-﻿import React from 'react';
-import { ShieldCheck, Zap } from 'lucide-react';
-import { ConnectionPill } from '../components/ConnectionPill';
+﻿import { useLocation } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { ConnectionStatus } from '../components/ConnectionStatus';
 import { NotificationBell } from '../components/NotificationBell';
-import { useOverallStatus } from '../hooks/useOverallStatus';
+import { TestModeBadge } from '../components/TestModeBadge';
+import { InfoTooltip } from '../components/InfoTooltip';
+import { Segmented } from '../components/ui';
+import { getSystemStatus, type SelfProtectionStatus } from '../api/endpoints';
 import type { ConnectionState, LiveNotification } from '../hooks/useLiveStream';
+import { pageMeta } from './nav';
 
 interface TopBarProps {
   expertMode: boolean;
@@ -14,66 +18,46 @@ interface TopBarProps {
   onMarkAllRead: () => void;
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  protected: 'Protected',
-  handled: 'Protected',
-  action_needed: 'Needs attention',
-  offline: 'Offline',
-};
+function isTampered(sp: SelfProtectionStatus | undefined): boolean {
+  if (!sp) return false;
+  return (
+    sp.recent_tamper_events.length > 0 ||
+    sp.watchdog.silenced.length > 0 ||
+    (sp.integrity?.state !== undefined && !['ok', 'no_manifest'].includes(sp.integrity.state)) ||
+    sp.evidence_chain?.ok === false
+  );
+}
 
-export const TopBar: React.FC<TopBarProps> = ({
-  expertMode,
-  setExpertMode,
-  liveState,
-  unreadCount,
-  notifications,
-  onMarkAllRead,
-}) => {
-  const { status } = useOverallStatus();
+export function TopBar({ expertMode, setExpertMode, liveState, unreadCount, notifications, onMarkAllRead }: TopBarProps) {
+  const { pathname } = useLocation();
+  const meta = pageMeta(pathname);
+  const { data: status } = useQuery({ queryKey: ['system-status'], queryFn: getSystemStatus, refetchInterval: 15000 });
 
   return (
-    <div className="px-4 sm:px-6 pt-4 sm:pt-6 pb-2 sticky top-0 z-30">
-      <header className="h-[72px] bg-[var(--color-sage)] rounded-[2rem] flex items-center justify-between px-4 sm:px-6 shadow-sm border border-[#1A1A1A]/5">
-        
-        {/* Left Side: Brand (Mobile) + Pills */}
-        <div className="flex items-center gap-4">
-          <div className="flex items-center sm:hidden mr-2">
-            <ShieldCheck className="w-7 h-7 text-[#1A1A1A] stroke-[2.5px]" />
-          </div>
+    <header className="relative z-30 flex items-center justify-between gap-6 px-8 pt-5 pb-4">
+      <div className="min-w-0">
+        <h1 className="text-[22px] font-semibold tracking-tight text-fg truncate">{meta.title}</h1>
+        <p className="text-[13px] text-fg-muted truncate mt-0.5">{meta.description}</p>
+      </div>
 
-          <div className="hidden sm:flex items-center bg-[#1A1A1A]/5 p-1 rounded-full">
-            <div className={`px-4 py-1 rounded-full text-sm font-bold shadow-sm ${status === 'action_needed' ? 'bg-orange-500 text-white' : 'bg-white text-[#1A1A1A]'}`}>
-              {STATUS_LABELS[status] ?? 'Protected'}
-            </div>
-            <div className="px-4 py-1 rounded-full text-sm font-bold text-[#1A1A1A]/60">
-              SentinelAI
-            </div>
-          </div>
-        </div>
-
-        {/* Right Side: Actions */}
-        <div className="flex items-center space-x-4 sm:space-x-6">
-          
-          <div className="hidden md:block">
-            <ConnectionPill state={liveState} />
-          </div>
-
-          <NotificationBell
-            unreadCount={unreadCount}
-            notifications={notifications}
-            onMarkAllRead={onMarkAllRead}
+      <div className="flex items-center gap-3 shrink-0">
+        {status?.test_mode && <TestModeBadge />}
+        <ConnectionStatus state={liveState} tampered={isTampered(status?.self_protection)} />
+        <div className="h-6 w-px bg-line mx-1" />
+        <div className="flex items-center gap-2">
+          <Segmented
+            ariaLabel="View"
+            value={expertMode ? 'expert' : 'simple'}
+            onChange={(v) => setExpertMode(v === 'expert')}
+            options={[
+              { value: 'simple', label: 'Simple' },
+              { value: 'expert', label: 'Expert' },
+            ]}
           />
-          
-          {/* Expert Toggle Styled like the 'Get started' button */}
-          <button 
-            onClick={() => setExpertMode(!expertMode)}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border-[2px] border-[#1A1A1A] shadow-[3px_3px_0px_#1A1A1A] transition-all hover:translate-y-[1px] hover:shadow-[2px_2px_0px_#1A1A1A] active:translate-y-[3px] active:shadow-none font-bold text-[#1A1A1A] text-sm ${expertMode ? 'bg-[#EEDDFF]' : 'bg-white'}`}
-          >
-            <Zap className="w-4 h-4 stroke-[2.5px]" />
-            {expertMode ? 'Expert Mode On' : 'Enable Expert'}
-          </button>
+          <InfoTooltip text="Simple shows plain-English explanations. Expert adds technical details like IP addresses, model confidence and raw data." />
         </div>
-      </header>
-    </div>
+        <NotificationBell unreadCount={unreadCount} notifications={notifications} onMarkAllRead={onMarkAllRead} />
+      </div>
+    </header>
   );
-};
+}

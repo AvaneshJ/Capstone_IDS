@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -72,8 +73,49 @@ def list_running_processes(limit: int = 25) -> List[Dict[str, Any]]:
 # psutil collection
 # -------------------------------------------------------------
 
+_snapshot_reader: Any = None
+_cpu_sampler: Any = None
+
+
+def _scan_windows() -> Optional[List[Dict[str, Any]]]:
+    """One NtQuerySystemInformation call for every process; None when unavailable."""
+    global _snapshot_reader, _cpu_sampler
+    from hids import winproc
+
+    if _snapshot_reader is False or not winproc.available():
+        return None
+    try:
+        if _snapshot_reader is None:
+            _snapshot_reader, _cpu_sampler = winproc.SnapshotReader(), winproc.CpuSampler()
+        procs = _snapshot_reader.read()
+    except Exception:
+        _snapshot_reader = False
+        return None
+
+    ncpu = os.cpu_count() or 1
+    cpu = _cpu_sampler.sample(procs, time.monotonic())
+    samples: List[Dict[str, Any]] = []
+    for p in procs:
+        create_time = round(p.create_time, 3)
+        samples.append(
+            {
+                "pid": p.pid,
+                "ppid": p.ppid,
+                "name": p.name,
+                "create_time": create_time,
+                "cpu_percent": round(cpu.get((p.pid, create_time), 0.0) / ncpu, 2),
+                "memory_mb": round(p.rss / (1024 * 1024), 1),
+            }
+        )
+    return samples
+
+
 def scan() -> List[Dict[str, Any]]:
-    """Cheap per-scan sample of every process (one psutil pass, no exceptions)."""
+    """Cheap per-scan sample of every process (one system snapshot on Windows, else one psutil pass)."""
+    fast = _scan_windows()
+    if fast is not None:
+        return fast
+
     import psutil
 
     ncpu = psutil.cpu_count() or 1
@@ -310,6 +352,7 @@ def run(
     log_dir: str = LOG_DIR,
     duration: float = 0.0,
     on_rows: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> None:
     tracker = ProcessTracker(stats_every=stats_every, exclude_pids={os.getpid()})
     out = DailyCsvWriter(log_dir)
@@ -328,10 +371,15 @@ def run(
             scans += 1
             if duration and time.monotonic() - start >= duration:
                 break
+            if stop_event is not None and stop_event.is_set():
+                break
             next_tick += interval
             delay = next_tick - time.monotonic()
             if delay > 0:
-                time.sleep(delay)
+                if stop_event is not None:
+                    stop_event.wait(delay)
+                else:
+                    time.sleep(delay)
             else:
                 overruns += 1
                 next_tick = time.monotonic()

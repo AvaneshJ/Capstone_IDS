@@ -1,118 +1,122 @@
-﻿import { useState, useEffect, useContext } from 'react';
+﻿import { useState, useContext } from 'react';
 import { ExpertContext } from '../App';
 import { generateReport, getReportDownloadUrl } from '../api/endpoints';
-import { FileText, Download, Loader2 } from 'lucide-react';
+import { FileText, Download, Loader2, CheckCircle2, ShieldCheck, ListChecks, Gauge, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import { Panel, IconTile, EmptyState } from '../components/index';
+import { openDownload } from '../lib/desktop';
+
+dayjs.extend(relativeTime);
 
 interface ReportRecord {
   filename: string;
   date: string;
 }
 
+function loadReports(): ReportRecord[] {
+  try {
+    return JSON.parse(localStorage.getItem('sentinel_reports') || '[]');
+  } catch {
+    return [];
+  }
+}
+
+const CONTENTS = [
+  { icon: ShieldCheck, text: 'Overall protection status' },
+  { icon: ListChecks, text: 'Every threat found and what was done' },
+  { icon: Gauge, text: 'How dangerous each threat was' },
+];
+
 export function Reports() {
   const { expert } = useContext(ExpertContext);
   const [loading, setLoading] = useState(false);
-  const [reports, setReports] = useState<ReportRecord[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [reports, setReports] = useState<ReportRecord[]>(loadReports);
 
-  useEffect(() => {
-    const saved = localStorage.getItem('sentinel_reports');
-    if (saved) {
-      try {
-        setReports(JSON.parse(saved));
-      } catch (e) {
-        console.error('Failed to parse reports');
-      }
-    }
-  }, []);
+  const save = (next: ReportRecord[]) => {
+    setReports(next);
+    localStorage.setItem('sentinel_reports', JSON.stringify(next));
+  };
 
   const handleGenerate = async () => {
     setLoading(true);
-    setError(null);
     try {
       const result = await generateReport();
-      const newReport: ReportRecord = {
-        filename: result.filename,
-        date: new Date().toISOString(),
-      };
-      
-      const newReports = [newReport, ...reports];
-      setReports(newReports);
-      localStorage.setItem('sentinel_reports', JSON.stringify(newReports));
-      toast.success('Report generated successfully');
-    } catch (err) {
-      console.error(err);
-      setError('Failed to generate report. Please try again.');
-      toast.error('Failed to generate report');
+      save([{ filename: result.filename, date: new Date().toISOString() }, ...reports]);
+      toast.success('Your security report is ready', {
+        action: { label: 'Save', onClick: () => openDownload(getReportDownloadUrl(result.filename)) },
+      });
+    } catch {
+      toast.error("Couldn't create the report. Is the protection engine running?");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto p-4">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900  mb-2">Reports</h1>
-        <p className="text-dark dark:text-dark">
-          A one-page summary of everything SentinelAI saw and did. Good for keeping records or sharing with IT support.
-        </p>
-      </div>
+    <div className="grid grid-cols-12 gap-5">
+      <section className="col-span-12 xl:col-span-5 glass p-6 animate-fade-up overflow-hidden">
+        <div className="pointer-events-none absolute -left-20 -bottom-24 w-72 h-72 rounded-full bg-accent/15 blur-3xl" />
+        <div className="relative">
+          <IconTile tone="accent" size="lg">
+            <FileText size={26} />
+          </IconTile>
+          <h2 className="mt-5 text-lg font-semibold text-fg">Create a security report</h2>
+          <p className="mt-1 text-sm text-fg-muted leading-relaxed">
+            A clear PDF summary of everything SentinelAI saw and did. Useful for your records, or to share with IT support if something went wrong.
+          </p>
+          <ul className="mt-5 space-y-2.5">
+            {CONTENTS.map((c) => (
+              <li key={c.text} className="flex items-center gap-3 text-sm text-fg">
+                <CheckCircle2 size={16} className="text-safe shrink-0" />
+                {c.text}
+              </li>
+            ))}
+          </ul>
+          <button onClick={handleGenerate} disabled={loading} className="btn btn-primary btn-lg w-full mt-6">
+            {loading ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
+            {loading ? 'Creating your report' : 'Create report (PDF)'}
+          </button>
+        </div>
+      </section>
 
-      <div className="bg-[var(--color-sage)] rounded-[2rem] p-8 text-center">
-        <button
-          onClick={handleGenerate}
-          disabled={loading}
-          className="inline-flex items-center justify-center gap-3 bg-emerald-600 hover:bg-emerald-700 text-white px-8 py-4 rounded-xl font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
-        >
-          {loading ? (
-            <Loader2 className="w-6 h-6 animate-spin" />
-          ) : (
-            <FileText className="w-6 h-6" />
-          )}
-          Create a security report (PDF)
-        </button>
-        {error && (
-          <p className="mt-4 text-red-500 text-sm font-medium">{error}</p>
-        )}
-      </div>
-
-      {reports.length > 0 && (
-        <div className="bg-[var(--color-sage)] rounded-[2rem] overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-200 border-transparent bg-gray-50 /50">
-            <h2 className="text-lg font-medium text-gray-900 ">Past Reports</h2>
-          </div>
-          <div className="divide-y divide-gray-200 dark:divide-gray-700">
+      <Panel
+        className="col-span-12 xl:col-span-7"
+        title="Past reports"
+        subtitle={reports.length ? `${reports.length} report${reports.length === 1 ? '' : 's'} created on this computer` : undefined}
+        actions={
+          reports.length > 0 && (
+            <button onClick={() => save([])} className="btn btn-ghost btn-sm" title="Remove the list (files are kept)">
+              <Trash2 size={14} /> Clear list
+            </button>
+          )
+        }
+      >
+        {reports.length === 0 ? (
+          <EmptyState icon={<FileText size={24} />} tone="neutral" title="No reports yet" description="Reports you create will appear here so you can download them again." />
+        ) : (
+          <div className="space-y-2">
             {reports.map((r, idx) => (
-              <div key={idx} className="p-6 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors">
-                <div className="flex items-center gap-4">
-                  <div className="p-2 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-lg">
-                    <FileText className="w-5 h-5" />
+              <div key={`${r.filename}-${idx}`} className="glass-inset glass-hover px-4 py-3 flex items-center gap-4">
+                <IconTile tone="accent" size="sm">
+                  <FileText size={16} />
+                </IconTile>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium text-fg">Security report</div>
+                  <div className="text-xs text-fg-muted">
+                    {dayjs(r.date).format('MMM D, YYYY h:mm A')} · {dayjs(r.date).fromNow()}
                   </div>
-                  <div>
-                    <h3 className="font-medium text-gray-900 ">Security Report</h3>
-                    <p className="text-sm text-dark dark:text-dark">
-                      {new Date(r.date).toLocaleString()}
-                    </p>
-                    {expert && (
-                      <p className="text-xs text-dark dark:text-dark mt-1 font-mono">
-                        {r.filename}
-                      </p>
-                    )}
-                  </div>
+                  {expert && <div className="text-[11px] text-fg-subtle font-mono mt-0.5 truncate">{r.filename}</div>}
                 </div>
-                <a
-                  href={getReportDownloadUrl(r.filename)}
-                  download={r.filename}
-                  className="flex items-center gap-2 px-4 py-2 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-lg font-medium transition-colors"
-                >
-                  <Download className="w-4 h-4" />
-                  Download
-                </a>
+                <button onClick={() => openDownload(getReportDownloadUrl(r.filename))} className="btn btn-secondary btn-sm">
+                  <Download size={14} /> Download
+                </button>
               </div>
             ))}
           </div>
-        </div>
-      )}
+        )}
+      </Panel>
     </div>
   );
 }

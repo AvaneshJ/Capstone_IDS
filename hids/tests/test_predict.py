@@ -66,7 +66,7 @@ class TestPredictor(unittest.TestCase):
             0.5,
         )
 
-    def test_browser_is_normal_and_temp_shell_child_is_stealer(self):
+    def test_browser_is_normal_and_temp_shell_child_is_anomalous(self):
         normal = self.predictor.predict(exit_row())
         stealer = self.predictor.predict(exit_row(
             pid=5252,
@@ -78,10 +78,22 @@ class TestPredictor(unittest.TestCase):
         self.assertEqual(normal.label, "Normal")
         self.assertFalse(normal.is_anomalous)
         self.assertLess(normal.anomaly_score, 0.5)
-        self.assertEqual(stealer.label, "Stealer")
+        self.assertEqual(stealer.label, "Anomalous")
         self.assertTrue(stealer.is_anomalous)
         self.assertGreater(stealer.anomaly_score, 0.5)
         self.assertLess(stealer.decision_score, stealer.threshold)
+
+    def test_batch_scores_match_single_scores(self):
+        runs = [
+            exit_row(),
+            exit_row(pid=5252, parent_name="cmd.exe", exe_path=TEMP_EXE, lifetime_s=4.0),
+            exit_row(pid=6262, lifetime_s=0.5),
+        ]
+        batch = self.predictor.predict_many(runs)
+        for run, scored in zip(runs, batch):
+            single = self.predictor.predict(run)
+            self.assertAlmostEqual(scored.decision_score, single.decision_score, places=12)
+            self.assertEqual(scored.is_anomalous, single.is_anomalous)
 
 
 class TestHostBridge(unittest.TestCase):
@@ -128,5 +140,39 @@ class TestHostBridge(unittest.TestCase):
         self.assertIn("Dry-Run", incident.action_status)
         self.assertIn("hids_isolation_forest", incident.raw_event.get("source", ""))
 
+    def test_anomalous_exit_without_a_file_is_alert_only_with_reasons(self):
+        run = exit_row(
+            pid=5353,
+            process_name="python.exe",
+            parent_name="powershell.exe",
+            exe_path=r"D:\Projects\Tool\.venv\Scripts\python.exe",
+            lifetime_s=3.0,
+        )
+        incidents = self.bridge.on_process_rows([run])
+        self.assertEqual(len(incidents), 1)
+        incident = incidents[0]
+        self.assertEqual(incident.classification, "Anomalous")
+        self.assertEqual(incident.soar_action.value, "ALERT_ONLY")
+        self.assertNotEqual(incident.severity.value, "HIGH")
+        self.assertEqual(incident.mitre_technique_id, "")
+        text = " ".join(incident.reasons)
+        self.assertIn("powershell.exe", text)
+        self.assertIn("did not touch", text)
+
     def test_normal_exit_is_not_sent(self):
         self.assertEqual(self.bridge.on_process_rows([exit_row()]), [])
+
+    def test_score_filter_skips_the_model_unless_a_watched_file_was_touched(self):
+        scored = []
+        predictor = self.bridge.predictor
+
+        class Spy:
+            def predict_many(self, runs):
+                scored.extend(r["pid"] for r in runs)
+                return predictor.predict_many(runs)
+
+        self.bridge.predictor = Spy()
+        self.bridge.score_filter = lambda row: False
+        self.bridge.on_file_rows([file_row(pid=7000)])
+        self.bridge.on_process_rows([exit_row(pid=6000), exit_row(pid=7000)])
+        self.assertEqual(scored, [7000])

@@ -255,3 +255,33 @@ When presenting to evaluators, execute `python demo_runner.py`:
 3. **Independent Scalability:** Packet ingest and inference can scale across worker threads/processes, while report compilation runs asynchronously in the background.
 4. **Dynamic Policy Reconfigurability:** Security rules (`rules/policies.yaml`) can be hot-reloaded without stopping the live network sniffer or retraining ML models.
 5. **Clear Team Division:** Distinct contracts allow the ML Lead (Member 1), Network Lead (Member 2), and Dashboard Lead (Member 4) to develop and test their components in parallel without blocking each other.
+
+---
+
+## 9. Self-Protection (Anti-Tamper)
+
+| Protection | Where | What raises a CRITICAL `Tamper` host incident |
+|---|---|---|
+| Integrity manifest (SHA-256, HMAC-signed) | `config/integrity.py`, `core/self_protection.py` | Models, `rules/policies.yaml`, `schema.sql`, core code (soar/hids/nids/config, Electron main) modified, deleted or added. Models are hashed **before** unpickling; tampered/unlisted models are refused. |
+| API token | `config/security.py`, `api/server.py` | All `/api/*` and `/ws/live-stream` need `X-SentinelAI-Token` (or `?token=`). CORS limited to the dashboard origins. |
+| Sensor heartbeats | `core/watchdog.py`, `core/live_monitor.py`, `POST /api/sensors/heartbeat` | A sensor thread dies or stops beating; the supervisor stops beating. |
+| Unclean shutdown | `core/self_protection.py` | Previous engine run ended without a clean/planned stop (killed). |
+| Tamper sensor | `hids/tamper_monitor.py` | Security log 1102 (cleared), 1100 (logging stopped), 4719 (audit removed); `taskkill`/`Stop-Process`/`wmic`/`sc stop` aimed at SentinelAI, `wevtutil cl`, `auditpol /clear`, firewall off, destructive commands on the install folder. |
+| Evidence chain | `database/db_manager.py` (`evidence_chain` table) | Incidents, host incidents or audit rows edited, deleted, injected, or the DB truncated/replaced (HMAC chain + anchor outside the DB). |
+| Append-only logs | `config/integrity.py` (`AppendOnlyWatch`) | `hids/logs/*.csv` truncated, edited or deleted. |
+
+Secrets live outside the repo in `%PROGRAMDATA%\SentinelAI` (fallback `%LOCALAPPDATA%\SentinelAI`, override `SENTINEL_DATA_DIR`), ACL'd to the owner, SYSTEM and Administrators: `api_token`, `integrity.key`, `integrity_manifest.json`, `evidence_anchor_*.json`.
+
+```powershell
+.venv\Scripts\python -m config.integrity generate   # trust current models/policies/code (re-run after intended updates)
+.venv\Scripts\python -m config.integrity verify     # exit code 1 if anything changed
+.venv\Scripts\python -m config.integrity show       # where the token / key / manifest live
+cd soar; ..\.venv\Scripts\python supervisor.py      # optional: keep the backend running, report kills
+.\scripts\install_service.ps1                       # optional (Admin + NSSM): service + restart-on-failure + ACLs
+```
+
+Environment: `SENTINEL_AUTH=0` disables the token (demos only), `SENTINEL_INTEGRITY_REQUIRED=1` refuses to load models without a manifest, `SENTINEL_CORS_ORIGINS` adds dashboard origins, `SENTINEL_API_TOKEN` overrides the token. Browser dev mode: set `VITE_API_TOKEN` in `dashboard/.env`; the Electron app reads the token file itself.
+
+Status: `GET /api/selfprotect/status` (also inside `/api/status` as `self_protection`), `POST /api/selfprotect/verify`; shown on the dashboard **System health** page and as a *Tamper alert* badge in the top bar.
+
+Limits: user-mode protection only. Malware running as the same user can read that user's token/key; an Administrator can stop the service and rewrite files. Kernel-level self-defense (Protected Process Light, ELAM, minifilter drivers) needs signed drivers and is out of scope. Command-line detection relies on the 2 s process scan, so very short-lived `taskkill` runs can be missed — the heartbeat watchdog, unclean-shutdown check and supervisor cover the result.

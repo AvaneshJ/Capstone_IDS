@@ -14,6 +14,12 @@ import colorama
 from colorama import Fore, Style
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Before numpy / sklearn / xgboost load: their thread pools size themselves at import.
+from config.runtime import apply_runtime_limits
+
+apply_runtime_limits()
 
 # Force UTF-8 encoding for Windows console compatibility
 if hasattr(sys.stdout, "reconfigure"):

@@ -1,4 +1,8 @@
-﻿export interface ConfirmModalProps {
+﻿import { useEffect } from 'react';
+import { AlertTriangle, HelpCircle } from 'lucide-react';
+import { IconTile } from './ui';
+
+export interface ConfirmModalProps {
   isOpen: boolean;
   onClose: () => void;
   onConfirm: () => void;
@@ -9,46 +13,53 @@
   variant?: 'danger' | 'default';
 }
 
-export function ConfirmModal({ 
-  isOpen, 
-  onClose, 
-  onConfirm, 
-  title, 
-  message, 
-  confirmLabel = 'Confirm', 
-  cancelLabel = 'Cancel', 
-  variant = 'default' 
+export function ConfirmModal({
+  isOpen,
+  onClose,
+  onConfirm,
+  title,
+  message,
+  confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
+  variant = 'default',
 }: ConfirmModalProps) {
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
-      <div className="bg-[var(--color-sage)] rounded-[2rem] w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-        <div className="p-6">
-          <h3 className="text-xl font-bold text-slate-900  mb-2">{title}</h3>
-          <p className="text-dark dark:text-dark">{message}</p>
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-6 bg-black/55 backdrop-blur-sm" onMouseDown={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="glass-strong w-full max-w-md animate-pop-in"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="p-6 flex gap-4">
+          <IconTile tone={variant === 'danger' ? 'warn' : 'accent'}>
+            {variant === 'danger' ? <AlertTriangle size={18} /> : <HelpCircle size={18} />}
+          </IconTile>
+          <div>
+            <h3 className="text-base font-semibold text-fg">{title}</h3>
+            <p className="mt-1.5 text-sm text-fg-muted leading-relaxed">{message}</p>
+          </div>
         </div>
-        <div className="px-6 py-4 bg-slate-50 /50 flex justify-end gap-3">
-          <button 
-            onClick={onClose}
-            className={`px-4 py-2 font-medium rounded-lg transition-colors ${
-              variant === 'danger' 
-                ? 'bg-indigo-600 text-white hover:bg-indigo-700' 
-                : 'text-dark hover:bg-slate-200  dark:hover:bg-slate-700'
-            }`}
-          >
+        <div className="px-6 py-4 border-t border-line flex justify-end gap-2">
+          {/* For risky actions the safe choice is the highlighted one. */}
+          <button onClick={onClose} className={`btn ${variant === 'danger' ? 'btn-primary' : 'btn-ghost'}`} autoFocus>
             {cancelLabel}
           </button>
-          <button 
+          <button
             onClick={() => {
               onConfirm();
               onClose();
             }}
-            className={`px-4 py-2 font-medium rounded-lg transition-colors ${
-              variant === 'danger'
-                ? 'text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30'
-                : 'bg-indigo-600 text-white hover:bg-indigo-700'
-            }`}
+            className={`btn ${variant === 'danger' ? 'btn-secondary text-danger' : 'btn-primary'}`}
           >
             {confirmLabel}
           </button>

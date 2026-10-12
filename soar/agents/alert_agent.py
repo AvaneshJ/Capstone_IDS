@@ -108,13 +108,19 @@ class AlertAgent(BaseAgent):
         mitre = f"{incident.mitre_technique_id} - {incident.mitre_technique_name}" if incident.mitre_technique_id else "Unmapped"
 
         title = f"🚨 [SentinelAI HIDS Alert] {incident.severity.value} Threat: {incident.classification}"
+        file_line = (
+            f"{incident.file_event.file_path} [{incident.file_event.event_type}]"
+            if incident.file_event.file_path else "none (behaviour only)"
+        )
         msg = (
             f"Process: {proc.process_name} (PID {proc.pid}, parent {proc.parent_name or 'unknown'})\n"
-            f"File: {incident.file_event.file_path} [{incident.file_event.event_type}]\n"
+            f"File: {file_line}\n"
             f"Risk Score: {incident.risk_score}/10 | Conf: {incident.confidence * 100:.1f}%\n"
             f"Autonomous Action: {action} ({incident.action_status})\n"
             f"MITRE: {mitre}"
         )
+        if incident.reasons:
+            msg += "\nWhy: " + " ".join(incident.reasons)
 
         alert = AlertMessage(
             severity=incident.severity,
@@ -127,7 +133,10 @@ class AlertAgent(BaseAgent):
             source="HIDS",
             incident_id=incident.incident_id,
         )
-        toast = f"{proc.process_name} touched {incident.file_event.file_type} (Risk {incident.risk_score}/10). Action: {action}"
+        if incident.file_event.file_path:
+            toast = f"{proc.process_name} touched {incident.file_event.file_type} (Risk {incident.risk_score}/10). Action: {action}"
+        else:
+            toast = f"{proc.process_name} behaved unusually (Risk {incident.risk_score}/10). Action: {action}"
         return self._fan_out(alert, toast)
 
     def _fan_out(self, alert: AlertMessage, toast_message: str) -> AlertMessage:

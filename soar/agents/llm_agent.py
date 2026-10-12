@@ -250,13 +250,21 @@ class LLMExplanationAgent(BaseAgent):
         fe = incident.file_event
         action = incident.soar_action.value
 
+        if fe.file_path:
+            what = f"accessed {fe.file_type} belonging to {fe.target_browser}"
+            access = f"{fe.event_type} access to '{fe.file_path}'"
+        else:
+            what = "behaved differently from normal programs on this computer but did not touch any protected file"
+            access = "No protected-file access recorded"
         summary = (
-            f"The program {proc.process_name} (PID {proc.pid}) accessed {fe.file_type} "
-            f"belonging to {fe.target_browser}. SentinelAI classified this as {incident.classification} "
-            f"activity with risk {incident.risk_score}/10 and responded with '{action}' ({incident.action_status})."
+            f"The program {proc.process_name} (PID {proc.pid}) {what}. SentinelAI classified this as "
+            f"{incident.classification} activity with risk {incident.risk_score}/10 and responded with "
+            f"'{action}' ({incident.action_status})."
         )
+        if incident.reasons:
+            summary += " Why it was flagged: " + " ".join(incident.reasons)
         technical = (
-            f"{fe.event_type} access to '{fe.file_path}' by '{proc.exe_path or proc.process_name}' "
+            f"{access} by '{proc.exe_path or proc.process_name}' "
             f"launched from parent '{proc.parent_name or 'unknown'}'. "
             f"Confidence {incident.confidence * 100:.1f}%, anomaly score {incident.anomaly_score:.2f}."
         )
@@ -280,6 +288,12 @@ class LLMExplanationAgent(BaseAgent):
                 f"Quarantine '{proc.exe_path or proc.process_name}' and run a full offline scan.",
                 "Verify backups are intact before restoring any affected files.",
             ]
+        elif incident.classification == "Anomalous":
+            recs = [
+                f"If you started {proc.process_name} yourself (a script, installer or developer tool), no action is needed.",
+                f"Otherwise scan '{proc.exe_path or proc.process_name}' with Defender.",
+                "Your saved passwords and cookies were not touched, so there is no need to change them.",
+            ]
         else:
             recs = ["No action required. Event retained in the host audit trail."]
 
@@ -301,7 +315,8 @@ Telemetry:
 - Classification: {incident.classification} (Confidence: {incident.confidence*100:.1f}%, Anomaly: {incident.anomaly_score:.2f})
 - Risk Score: {incident.risk_score}/10 ({incident.severity.value})
 - Process: {proc.process_name} (PID {proc.pid}), Path: {proc.exe_path or 'unknown'}, Parent: {proc.parent_name or 'unknown'}
-- File Accessed: {fe.file_path} ({fe.file_type}, {fe.event_type}, Browser: {fe.target_browser})
+- File Accessed: {f"{fe.file_path} ({fe.file_type}, {fe.event_type}, Browser: {fe.target_browser})" if fe.file_path else "none (flagged on process behaviour only; do not describe this as password theft)"}
+- Why Flagged: {" ".join(incident.reasons) or "n/a"}
 - MITRE Technique: {incident.mitre_technique_id} - {incident.mitre_technique_name} ({incident.mitre_tactic})
 - Action Enforced: {incident.soar_action.value} ({incident.action_status})
 """

@@ -12,6 +12,8 @@ import logging
 from typing import Dict, List, Any, Optional
 from contextlib import asynccontextmanager
 
+from urllib.parse import parse_qs
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -21,13 +23,63 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.orchestrator import SentinelOrchestrator
+from core.live_monitor import LiveMonitor
+from core.self_protection import SelfProtection, auth_enabled
 from core.schemas import FlowEvent, Incident, AlertMessage
 from database.db_manager import DatabaseManager
+from config import security
 
 logger = logging.getLogger("SentinelAI.API")
 
 # Global Orchestrator instance
 orchestrator: Optional[SentinelOrchestrator] = None
+live_monitor: Optional[LiveMonitor] = None
+self_protection: Optional[SelfProtection] = None
+_event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+# Reachable without the API token: liveness probe used by the desktop app and the API docs
+OPEN_PATHS = {"/", "/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://localhost:4173", "http://127.0.0.1:4173",
+    "file://", "null",
+]
+
+
+def cors_origins() -> List[str]:
+    extra = [o.strip() for o in os.getenv("SENTINEL_CORS_ORIGINS", "").split(",") if o.strip()]
+    return DEFAULT_CORS_ORIGINS + extra
+
+
+class TokenAuthMiddleware:
+    """Requires X-SentinelAI-Token (or ?token= for WebSockets / download links) on every non-open path."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        kind = scope["type"]
+        if (
+            kind not in ("http", "websocket")
+            or not auth_enabled()
+            or scope.get("path") in OPEN_PATHS
+            or (kind == "http" and scope.get("method") == "OPTIONS")
+        ):
+            return await self.app(scope, receive, send)
+
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        supplied = headers.get(security.TOKEN_HEADER.lower())
+        if not supplied:
+            supplied = (parse_qs(scope.get("query_string", b"").decode("latin-1")).get("token") or [None])[0]
+        if security.tokens_equal(supplied, security.api_token()):
+            return await self.app(scope, receive, send)
+
+        logger.warning("Rejected unauthenticated %s %s", kind, scope.get("path"))
+        if kind == "websocket":
+            await send({"type": "websocket.close", "code": 4401})
+            return
+        response = JSONResponse({"detail": "Missing or invalid API token"}, status_code=401)
+        await response(scope, receive, send)
 
 
 class ConnectionManager:
@@ -68,6 +120,15 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 
+def broadcast_from_thread(event_type: str, data: Dict[str, Any]) -> None:
+    """Called from sensor threads: push an event to dashboard WebSockets on the server loop."""
+    if _event_loop is None or _event_loop.is_closed():
+        return
+    asyncio.run_coroutine_threadsafe(
+        ws_manager.broadcast_json({"event_type": event_type, "data": data}), _event_loop
+    )
+
+
 async def alert_broadcaster_worker():
     """Background task pulling alerts from AlertAgent queue and pushing to WebSockets."""
     loop = asyncio.get_event_loop()
@@ -92,22 +153,40 @@ async def alert_broadcaster_worker():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager: initializes SentinelAI Orchestrator on startup and stops cleanly on exit."""
-    global orchestrator
+    global orchestrator, live_monitor, self_protection, _event_loop
     logger.info("Initializing SentinelAI Multi-Agent Backend Server...")
+    if auth_enabled():
+        logger.info("API token required (header %s). Token file: %s", security.TOKEN_HEADER, security.token_path())
+        security.api_token()
+    else:
+        logger.warning("SENTINEL_AUTH=0: the API is open to every local process.")
     orchestrator = SentinelOrchestrator(
         dry_run_firewall=True,
         dry_run_host_response=True,
         enable_desktop_alerts=False
     )
     orchestrator.initialize()
+    _event_loop = asyncio.get_running_loop()
 
     # Start background WebSocket broadcaster
     broadcast_task = asyncio.create_task(alert_broadcaster_worker())
+
+    # Real-time sensors (network capture + HIDS) feeding the same orchestrator
+    self_protection = SelfProtection(orchestrator, notify=broadcast_from_thread)
+    live_monitor = LiveMonitor(orchestrator, on_incident=broadcast_from_thread)
+    live_monitor.watchdog = self_protection.watchdog
+    live_monitor.on_tamper = self_protection.on_finding
+    await asyncio.get_running_loop().run_in_executor(None, live_monitor.start)
+    await asyncio.get_running_loop().run_in_executor(None, self_protection.start)
     logger.info("FastAPI Backend ready at http://localhost:8000 (Swagger docs: http://localhost:8000/docs)")
 
     yield
 
     logger.info("Shutting down SentinelAI Backend Server...")
+    if self_protection:
+        self_protection.stop()
+    if live_monitor:
+        live_monitor.stop()
     broadcast_task.cancel()
     if orchestrator:
         orchestrator.shutdown()
@@ -121,13 +200,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for React (Vite: 5173, CRA/Next: 3000, etc.)
+app.add_middleware(TokenAuthMiddleware)
+# Added last so it wraps auth: 401 responses still carry CORS headers for the dashboard
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", security.TOKEN_HEADER],
 )
 
 
@@ -198,8 +278,68 @@ def get_system_status():
     """
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
-    metrics = orchestrator.get_system_metrics()
-    return metrics.to_dict()
+    status = orchestrator.get_system_metrics().to_dict()
+    status["test_mode"] = bool(orchestrator.firewall_agent.dry_run or orchestrator.host_agent.dry_run)
+    if live_monitor:
+        status["live"] = live_monitor.status()
+    if self_protection:
+        status["self_protection"] = self_protection.status()
+    return status
+
+
+class HeartbeatRequest(BaseModel):
+    sensor: str = Field(..., min_length=1, max_length=64, description="Sensor name, e.g. hids_live or supervisor")
+    pid: Optional[int] = Field(None, description="Process ID of the sender")
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    event: Optional[Dict[str, Any]] = Field(None, description="Optional tamper finding (kind, title, details, mitre_id)")
+
+
+@app.post("/api/sensors/heartbeat")
+def sensor_heartbeat(req: HeartbeatRequest):
+    """Out-of-process sensors and the supervisor check in here; silence raises a CRITICAL tamper incident."""
+    if not self_protection:
+        raise HTTPException(status_code=503, detail="Self-protection not initialized")
+    self_protection.watchdog.beat(req.sensor, pid=req.pid, **req.meta)
+    if req.event:
+        self_protection.on_finding({**req.event, "pid": req.event.get("pid", req.pid)})
+    return {"status": "OK"}
+
+
+@app.get("/api/selfprotect/status")
+def get_self_protection_status():
+    """Integrity manifest state, evidence-chain verification, sensor heartbeats and recent tamper events."""
+    if not self_protection:
+        raise HTTPException(status_code=503, detail="Self-protection not initialized")
+    return self_protection.status()
+
+
+@app.post("/api/selfprotect/verify")
+def run_self_protection_checks():
+    """Run a full integrity re-hash and evidence-chain verification now."""
+    if not self_protection:
+        raise HTTPException(status_code=503, detail="Self-protection not initialized")
+    self_protection.check_integrity(full=True)
+    self_protection.check_chain()
+    return self_protection.status()
+
+
+@app.post("/api/engine/stopping")
+def engine_stopping():
+    """Called by the desktop app before it stops the engine, so the restart isn't reported as a kill."""
+    if self_protection:
+        self_protection.mark_planned_stop()
+    return {"status": "OK"}
+
+
+@app.get("/api/live/status")
+def get_live_status():
+    """
+    Real-time sensor status: network capture (Npcap) and HIDS process / file sensors,
+    with counters for flows checked, threats found and repeats grouped.
+    """
+    if not live_monitor:
+        raise HTTPException(status_code=503, detail="Live monitor not initialized")
+    return live_monitor.status()
 
 
 @app.get("/api/metrics")
@@ -379,8 +519,9 @@ def download_report(filename: str):
     """
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Orchestrator not initialized")
-    file_path = os.path.join(orchestrator.report_agent.reports_dir, filename)
-    if not os.path.exists(file_path):
+    reports_dir = os.path.abspath(orchestrator.report_agent.reports_dir)
+    file_path = os.path.abspath(os.path.join(reports_dir, filename))
+    if os.path.dirname(file_path) != reports_dir or not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Report file not found")
     return FileResponse(file_path, media_type="application/pdf", filename=filename)
 

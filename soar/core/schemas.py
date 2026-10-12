@@ -285,7 +285,7 @@ class HostIncident:
     hostname: str = "WINDOWS-HOST"
     process: HostProcessInfo = field(default_factory=HostProcessInfo)
     file_event: HostFileEvent = field(default_factory=HostFileEvent)
-    classification: str = "Normal"  # Normal, Stealer, Ransomware
+    classification: str = "Normal"  # Normal, Anomalous, Stealer, Ransomware, Malware
     confidence: float = 1.0
     anomaly_score: float = 0.0
     risk_score: float = 0.0
@@ -296,6 +296,7 @@ class HostIncident:
     soar_action: HostActionType = HostActionType.LOG_ONLY
     action_status: str = "PENDING"  # SUCCESS, SIMULATED, FAILED, PENDING
     remediation_notes: str = ""
+    reasons: List[str] = field(default_factory=list)  # plain-language "why was this flagged"
     raw_event: Dict[str, Any] = field(default_factory=dict)
     alert: Optional[AlertMessage] = None
     llm_explanation: Optional[LLMExplanation] = None
@@ -319,6 +320,7 @@ class HostIncident:
             "soar_action": self.soar_action.value,
             "action_status": self.action_status,
             "remediation_notes": self.remediation_notes,
+            "reasons": list(self.reasons),
             "raw_event": self.raw_event,
             "alert": self.alert.to_dict() if self.alert else None,
             "llm_explanation": self.llm_explanation.to_dict() if self.llm_explanation else None,

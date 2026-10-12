@@ -27,10 +27,12 @@ const THREAT_MAP: Record<string, ThreatInfo> = {
   infiltration:   { friendlyName: 'Break-in attempt', explanation: 'Someone tried to exploit a weakness to get in.', advice: 'Update Windows and your apps.', icon: 'ShieldAlert' },
   webattack:      { friendlyName: 'Website attack', explanation: 'Someone tried to trick a web service you run.', advice: 'Update your web software.', icon: 'Globe' },
   anomaloustraffic: { friendlyName: 'Unusual activity', explanation: "Traffic that doesn't look normal, but doesn't match a known attack.", advice: 'Keep an eye on it. No action yet.', icon: 'AlertCircle' },
+  anomalous:      { friendlyName: 'Unusual program behaviour', explanation: "A program ran in a way normal apps on this computer don't (for example from a user folder, started by a command window, and closing within seconds). It did not open your passwords or other protected files.", advice: 'If you started this program yourself (a script, installer or developer tool), you can ignore this. Otherwise run an antivirus scan.', icon: 'AlertCircle' },
   stealer:        { friendlyName: 'Password-stealing program', explanation: 'A program secretly opened your saved passwords or login cookies.', advice: 'Change your saved passwords, sign out of all sessions, run antivirus.', icon: 'KeyRound' },
   infostealer:    { friendlyName: 'Password-stealing program', explanation: 'A program secretly opened your saved passwords or login cookies.', advice: 'Change your saved passwords, sign out of all sessions, run antivirus.', icon: 'KeyRound' },
   ransomware:     { friendlyName: 'Ransomware (file-locking program)', explanation: 'A program tried to lock your files to demand money.', advice: 'Disconnect from the internet and contact IT support.', icon: 'Lock' },
   malware:        { friendlyName: 'Harmful program', explanation: 'A program behaving like malware.', advice: 'Run a full antivirus scan.', icon: 'Bug' },
+  tamper:         { friendlyName: 'Attack on SentinelAI itself', explanation: 'Something tried to switch off, blind or modify SentinelAI (stopping it, changing its files, or erasing logs).', advice: 'Run a full antivirus scan, then open System health to see what was changed. Contact IT support if you did not do this.', icon: 'ShieldAlert' },
 };
 
 const DEFAULT_THREAT: ThreatInfo = {
@@ -62,33 +64,36 @@ export function isBenign(raw: string | null | undefined): boolean {
 
 // â”€â”€ 6.2 Severity â”€â”€
 
+export type SeverityTone = 'critical' | 'high' | 'medium' | 'low';
+
 export interface SeverityInfo {
   label: string;
-  color: string;
-  bgColor: string;
-  textColor: string;
+  short: string;
+  tone: SeverityTone;
+  tagClass: string;
+  hex: string;
   icon: string;
 }
 
-const SEVERITY_MAP: Record<string, SeverityInfo> = {
-  critical: { label: 'Critical: act now', color: 'text-critical', bgColor: 'bg-critical-bg', textColor: 'text-red-700', icon: 'ShieldAlert' },
-  high:     { label: 'Serious', color: 'text-high', bgColor: 'bg-high-bg', textColor: 'text-orange-700', icon: 'AlertTriangle' },
-  medium:   { label: 'Worth a look', color: 'text-medium', bgColor: 'bg-medium-bg', textColor: 'text-amber-700', icon: 'AlertCircle' },
-  low:      { label: 'Minor', color: 'text-low', bgColor: 'bg-low-bg', textColor: 'text-sky-700', icon: 'Info' },
+const SEVERITY_MAP: Record<SeverityTone, SeverityInfo> = {
+  critical: { label: 'Critical: act now', short: 'Critical', tone: 'critical', tagClass: 'tag-danger', hex: '#f87171', icon: 'ShieldAlert' },
+  high:     { label: 'Serious', short: 'Serious', tone: 'high', tagClass: 'tag-high', hex: '#fb923c', icon: 'AlertTriangle' },
+  medium:   { label: 'Worth a look', short: 'Worth a look', tone: 'medium', tagClass: 'tag-warn', hex: '#fbbf24', icon: 'AlertCircle' },
+  low:      { label: 'Minor', short: 'Minor', tone: 'low', tagClass: 'tag-info', hex: '#60a5fa', icon: 'Info' },
 };
 
 export function translateSeverity(raw: string | null | undefined): SeverityInfo {
   if (!raw) return SEVERITY_MAP.low;
-  return SEVERITY_MAP[raw.toLowerCase()] ?? SEVERITY_MAP.low;
+  return SEVERITY_MAP[raw.toLowerCase() as SeverityTone] ?? SEVERITY_MAP.low;
 }
 
 // â”€â”€ 6.3 Risk Score â”€â”€
 
-export function riskToWord(score: number): { label: string; color: string } {
-  if (score >= 8.5) return { label: 'Critical', color: 'text-critical' };
-  if (score >= 7.0) return { label: 'High', color: 'text-high' };
-  if (score >= 5.0) return { label: 'Moderate', color: 'text-medium' };
-  return { label: 'Low', color: 'text-low' };
+export function riskToWord(score: number): { label: string; color: string; hex: string } {
+  if (score >= 8.5) return { label: 'Critical', color: 'text-danger', hex: '#f87171' };
+  if (score >= 7.0) return { label: 'High', color: 'text-high', hex: '#fb923c' };
+  if (score >= 5.0) return { label: 'Moderate', color: 'text-warn', hex: '#fbbf24' };
+  return { label: 'Low', color: 'text-info', hex: '#60a5fa' };
 }
 
 export function formatRisk(score: number): string {
@@ -120,21 +125,21 @@ export function translateHostAction(raw: string | null | undefined): string {
     case 'TERMINATE_PROCESS': return 'Stopped the program';
     case 'SUSPEND_PROCESS':   return 'Paused the program';
     case 'QUARANTINE_FILE':   return 'Moved the file to a safe place';
-    case 'ALERT_ONLY':        return 'Warned you (a system program was involved, so we didn\'t stop it for safety)';
+    case 'ALERT_ONLY':        return 'Warned you, the program was not stopped';
     case 'LOG_ONLY':          return 'Noted for the record';
     default:                  return 'Action taken';
   }
 }
 
-export function translateActionStatus(raw: string | null | undefined): { label: string; color: string; bgColor: string } {
-  if (!raw) return { label: 'Unknown', color: 'text-muted', bgColor: 'bg-slate-100' };
+export function translateActionStatus(raw: string | null | undefined): { label: string; tagClass: string } {
+  if (!raw) return { label: 'Unknown', tagClass: 'tag-neutral' };
   const upper = raw.toUpperCase();
-  if (upper.includes('SUCCESS'))          return { label: 'Done', color: 'text-safe', bgColor: 'bg-safe-bg' };
-  if (upper.includes('SIMULATED'))        return { label: 'Test mode: would have done this', color: 'text-brand', bgColor: 'bg-indigo-50' };
-  if (upper.includes('FAILED'))           return { label: "Couldn't complete. Please act.", color: 'text-critical', bgColor: 'bg-critical-bg' };
-  if (upper.includes('PENDING'))          return { label: 'In progress', color: 'text-muted', bgColor: 'bg-slate-100' };
-  if (upper.includes('ALERT_DISPATCHED')) return { label: 'Alert sent', color: 'text-medium', bgColor: 'bg-medium-bg' };
-  return { label: raw, color: 'text-muted', bgColor: 'bg-slate-100' };
+  if (upper.includes('SUCCESS'))          return { label: 'Done', tagClass: 'tag-safe' };
+  if (upper.includes('SIMULATED'))        return { label: 'Test mode: would have done this', tagClass: 'tag-accent' };
+  if (upper.includes('FAILED'))           return { label: "Couldn't complete. Please act.", tagClass: 'tag-danger' };
+  if (upper.includes('PENDING'))          return { label: 'In progress', tagClass: 'tag-neutral' };
+  if (upper.includes('ALERT_DISPATCHED')) return { label: 'Alert sent', tagClass: 'tag-warn' };
+  return { label: raw, tagClass: 'tag-neutral' };
 }
 
 // â”€â”€ 6.6 Firewall Rule Status â”€â”€
@@ -265,14 +270,14 @@ export function translateAgentName(key: string): { friendlyName: string; descrip
   return { friendlyName: key, description: '' };
 }
 
-export function translateAgentStatus(status: string): { label: string; color: string; dotColor: string } {
+export function translateAgentStatus(status: string): { label: string; tagClass: string; dotColor: string; ok: boolean } {
   switch (status?.toUpperCase()) {
-    case 'IDLE':          return { label: 'Ready', color: 'text-safe', dotColor: 'bg-safe' };
-    case 'PROCESSING':    return { label: 'Working', color: 'text-brand', dotColor: 'bg-brand' };
-    case 'ERROR':         return { label: 'Problem', color: 'text-critical', dotColor: 'bg-critical' };
-    case 'OFFLINE':       return { label: 'Off', color: 'text-muted', dotColor: 'bg-muted' };
-    case 'UNINITIALIZED': return { label: 'Startingâ€¦', color: 'text-muted', dotColor: 'bg-muted' };
-    default:              return { label: status || 'Unknown', color: 'text-muted', dotColor: 'bg-muted' };
+    case 'IDLE':          return { label: 'Ready', tagClass: 'tag-safe', dotColor: 'bg-safe', ok: true };
+    case 'PROCESSING':    return { label: 'Working', tagClass: 'tag-accent', dotColor: 'bg-accent', ok: true };
+    case 'ERROR':         return { label: 'Problem', tagClass: 'tag-danger', dotColor: 'bg-danger', ok: false };
+    case 'OFFLINE':       return { label: 'Off', tagClass: 'tag-neutral', dotColor: 'bg-fg-subtle', ok: false };
+    case 'UNINITIALIZED': return { label: 'Starting', tagClass: 'tag-neutral', dotColor: 'bg-fg-subtle', ok: true };
+    default:              return { label: status || 'Unknown', tagClass: 'tag-neutral', dotColor: 'bg-fg-subtle', ok: true };
   }
 }
 

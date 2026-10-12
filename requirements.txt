@@ -12,6 +12,7 @@ matplotlib>=3.7.0
 # Live capture / CIC-compatible flow export (optional until lab)
 scapy>=2.5.0
 cicflowmeter>=0.5.0
+pydivert>=3.0.0; sys_platform == "win32"
 scipy>=1.11.0
 
 # SOAR (multi-agent pipeline, API, reports, alerts)

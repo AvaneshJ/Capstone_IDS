@@ -1,28 +1,31 @@
 ﻿import { useContext, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Shield, Clock } from 'lucide-react';
+import { ShieldCheck, Clock, Ban, FlaskConical, Unlock, Globe } from 'lucide-react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-
-import { ExpertContext } from '../App';
-import { Skeleton, ErrorState, ConfirmModal } from '../components/index';
-import { getBlocks, unblockIP } from '../api/endpoints';
-import type { BlocksResponse } from '../api/endpoints';
-import { translateThreat } from '../lib/translate';
 import { toast } from 'sonner';
 
+import { ExpertContext } from '../App';
+import { Skeleton, ErrorState, ConfirmModal, EmptyState, IconTile, KpiCard } from '../components/index';
+import { getBlocks, unblockIP } from '../api/endpoints';
+import type { BlocksResponse, BlockedIP } from '../api/endpoints';
+import { translateThreat, maskIP, isPrivateIP } from '../lib/translate';
+
 dayjs.extend(relativeTime);
+
+const STATUS: Record<string, { label: string; tag: string }> = {
+  ACTIVE: { label: 'Blocked', tag: 'tag-safe' },
+  SIMULATED: { label: 'Test mode', tag: 'tag-accent' },
+  RELEASED: { label: 'Unblocked', tag: 'tag-neutral' },
+  FAILED: { label: "Couldn't block", tag: 'tag-danger' },
+};
 
 export default function Blocked() {
   const { expert } = useContext(ExpertContext);
   const queryClient = useQueryClient();
-  const [selectedIp, setSelectedIp] = useState<string | null>(null);
+  const [selected, setSelected] = useState<BlockedIP | null>(null);
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['blocks'],
-    queryFn: getBlocks,
-    refetchInterval: 15000,
-  });
+  const { data, isLoading, error, refetch } = useQuery({ queryKey: ['blocks'], queryFn: getBlocks, refetchInterval: 15000 });
 
   const unblockMutation = useMutation({
     mutationFn: unblockIP,
@@ -30,10 +33,7 @@ export default function Blocked() {
       await queryClient.cancelQueries({ queryKey: ['blocks'] });
       const previousBlocks = queryClient.getQueryData<BlocksResponse>(['blocks']);
       queryClient.setQueryData<BlocksResponse>(['blocks'], (old) =>
-        old && {
-          ...old,
-          blocked_ips: old.blocked_ips.map((b) => b.rule_id === ruleId ? { ...b, status: 'RELEASED' } : b),
-        }
+        old && { ...old, blocked_ips: old.blocked_ips.map((b) => (b.rule_id === ruleId ? { ...b, status: 'RELEASED' } : b)) }
       );
       return { previousBlocks };
     },
@@ -47,103 +47,85 @@ export default function Blocked() {
     },
   });
 
-  if (isLoading) return <div className="p-6"><Skeleton className="h-64 w-full" /></div>;
-  if (error) return <div className="p-6"><ErrorState message="Could not load blocked addresses." /></div>;
+  if (isLoading) {
+    return (
+      <div className="space-y-5">
+        <div className="grid grid-cols-3 gap-5">
+          <Skeleton className="h-[148px]" />
+          <Skeleton className="h-[148px]" />
+          <Skeleton className="h-[148px]" />
+        </div>
+        <Skeleton className="h-64" />
+      </div>
+    );
+  }
+  if (error) return <ErrorState message="We couldn't load blocked addresses." onRetry={() => refetch()} />;
 
   const blocks = data?.blocked_ips ?? [];
+  const active = blocks.filter((b) => b.status === 'ACTIVE').length;
+  const simulated = blocks.filter((b) => b.status === 'SIMULATED').length;
+  const released = blocks.filter((b) => b.status === 'RELEASED').length;
 
-  const handleUnblock = (ip: string) => {
-    setSelectedIp(ip);
-  };
-
-  const confirmUnblock = () => {
-    if (selectedBlock) {
-      unblockMutation.mutate(selectedBlock.rule_id);
-      setSelectedIp(null);
-    }
-  };
-
-  const maskIp = (ip: string) => {
-    if (expert) return ip;
-    const parts = ip.split('.');
-    if (parts.length === 4) {
-      return `Outside computer ${parts[0]}.${parts[1]}.x.x`;
-    }
-    return 'Outside computer';
-  };
-
-  const selectedBlock = blocks.find((b) => b.ip_address === selectedIp);
-  const selectedReason = selectedBlock ? translateThreat(selectedBlock.reason || 'Unknown').friendlyName.toLowerCase() : '';
+  const label = (ip: string) => (expert ? ip : `${isPrivateIP(ip) ? 'Device on your network' : 'Outside computer'} ${maskIP(ip)}`);
 
   return (
-    <div className="max-w-5xl mx-auto p-4 md:p-6 space-y-6">
-      <div className="mb-8">
-        <h1 className="text-2xl font-semibold text-gray-800 mb-2">Blocked Addresses</h1>
-        <p className="text-dark">These outside addresses tried to harm your computer. SentinelAI is keeping them out.</p>
+    <div className="space-y-5">
+      <div className="grid grid-cols-3 gap-5">
+        <KpiCard tone="sun" icon={<Ban size={18} />} title="Blocked right now" value={active} helperText="Addresses your firewall is actively keeping out." />
+        <KpiCard tone="accent" icon={<FlaskConical size={18} />} title="Would block (test mode)" value={simulated} helperText="In safe test mode SentinelAI shows what it would block without touching your firewall." />
+        <KpiCard tone="mint" icon={<Unlock size={18} />} title="Unblocked" value={released} helperText="Addresses whose block has ended or that you allowed back in." />
       </div>
 
       {blocks.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center mb-4">
-            <Shield className="w-10 h-10 text-emerald-500" />
-          </div>
-          <h3 className="text-lg font-medium text-gray-800">No one is blocked right now</h3>
-          <p className="text-dark mt-2">That's a good thing. We'll keep watching.</p>
+        <div className="glass p-5">
+          <EmptyState icon={<ShieldCheck size={24} />} title="No one is blocked right now" description="That's a good thing. SentinelAI will block anyone who tries to attack your computer." />
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4">
           {blocks.map((block) => {
-            const threatInfo = translateThreat(block.reason || 'Unknown');
-            const timeSince = dayjs.unix(block.block_timestamp).fromNow();
+            const threat = translateThreat(block.reason || 'Unknown');
+            const status = STATUS[block.status?.toUpperCase()] ?? { label: block.status, tag: 'tag-neutral' };
             const expiry = block.expiry_timestamp ? dayjs.unix(block.expiry_timestamp) : null;
-            const isPermanent = !expiry;
-            let timerText = "Permanent";
-            if (!isPermanent && expiry) {
-                const diffHours = expiry.diff(dayjs(), 'hour');
-                const diffMins = expiry.diff(dayjs(), 'minute') % 60;
-                timerText = diffHours > 0 ? `${diffHours}h ${diffMins}m remaining` : `${diffMins}m remaining`;
+            let timer = 'Until you unblock it';
+            if (expiry) {
+              const mins = Math.max(expiry.diff(dayjs(), 'minute'), 0);
+              timer = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m left` : `${mins}m left`;
             }
-
-            let statusColor = 'bg-emerald-100 text-emerald-700';
-            let statusText = 'Blocked';
-            if (block.status === 'SIMULATED') {
-              statusColor = 'bg-blue-100 text-blue-700';
-              statusText = 'Test mode';
-            } else if (block.status === 'RELEASED') {
-              statusColor = 'bg-gray-100 text-dark';
-              statusText = 'Unblocked';
-            } else if (block.status === 'FAILED') {
-              statusColor = 'bg-rose-100 text-rose-700';
-              statusText = "Couldn't block";
-            }
+            const canUnblock = block.status === 'ACTIVE' || block.status === 'SIMULATED';
 
             return (
-              <div key={block.rule_id || block.ip_address} className="bg-[var(--color-sage)] rounded-[2rem] p-5 flex flex-col">
-                <div className="flex justify-between items-start mb-4">
-                  <div className="font-mono text-sm font-medium text-gray-800 bg-gray-50 px-2 py-1 rounded">
-                    {maskIp(block.ip_address)}
+              <div key={block.rule_id || block.ip_address} className="glass glass-hover p-5 flex flex-col animate-fade-up">
+                <div className="flex items-start gap-3">
+                  <IconTile tone={canUnblock ? 'sun' : 'neutral'}>
+                    <Globe size={18} />
+                  </IconTile>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-fg font-mono truncate">{label(block.ip_address)}</div>
+                    <div className="text-[13px] text-fg-muted mt-0.5">{threat.friendlyName}</div>
                   </div>
-                  <span className={`text-xs px-2 py-1 rounded-full font-medium ${statusColor}`}>
-                    {statusText}
-                  </span>
-                </div>
-                
-                <div className="mb-4 flex-1">
-                  <p className="text-sm font-medium text-dark">{threatInfo.friendlyName}</p>
-                  <p className="text-xs text-dark mt-1">Blocked {timeSince}</p>
-                  {block.status === 'ACTIVE' && (
-                    <p className="text-xs text-dark mt-1 flex items-center gap-1">
-                      <Clock className="w-3 h-3" /> {timerText}
-                    </p>
-                  )}
+                  <span className={`tag ${status.tag}`}>{status.label}</span>
                 </div>
 
-                {(block.status === 'ACTIVE' || block.status === 'SIMULATED') && (
-                  <button 
-                    onClick={() => handleUnblock(block.ip_address)}
-                    className="w-full py-2 px-4 bg-gray-50 hover:bg-gray-100 text-sm font-medium text-dark rounded-lg transition-colors border border-gray-200"
-                  >
-                    Unblock Address
+                <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                  <div className="glass-inset px-3 py-2">
+                    <div className="text-fg-subtle">Blocked</div>
+                    <div className="text-fg mt-0.5">{dayjs.unix(block.block_timestamp).fromNow()}</div>
+                  </div>
+                  <div className="glass-inset px-3 py-2">
+                    <div className="text-fg-subtle flex items-center gap-1"><Clock size={11} /> How long</div>
+                    <div className="text-fg mt-0.5">{canUnblock ? timer : 'Ended'}</div>
+                  </div>
+                </div>
+
+                {expert && block.command_executed && (
+                  <div className="mt-3 text-[11px] font-mono text-fg-subtle truncate" title={block.command_executed}>
+                    {block.command_executed}
+                  </div>
+                )}
+
+                {canUnblock && (
+                  <button onClick={() => setSelected(block)} className="btn btn-secondary btn-sm mt-4 w-full">
+                    <Unlock size={14} /> Unblock
                   </button>
                 )}
               </div>
@@ -152,19 +134,18 @@ export default function Blocked() {
         </div>
       )}
 
-      {selectedIp && (
+      {selected && (
         <ConfirmModal
           isOpen
-          title={`Unblock ${maskIp(selectedIp)}?`}
-          message={`This address was blocked for: ${selectedReason}. It will be able to reach your computer again.`}
+          title={`Unblock ${label(selected.ip_address)}?`}
+          message={`This address was blocked for: ${translateThreat(selected.reason || 'Unknown').friendlyName.toLowerCase()}. Once unblocked, it will be able to reach your computer again.`}
           cancelLabel="Keep blocked"
           confirmLabel="Unblock anyway"
           variant="danger"
-          onConfirm={confirmUnblock}
-          onClose={() => setSelectedIp(null)}
+          onConfirm={() => unblockMutation.mutate(selected.rule_id)}
+          onClose={() => setSelected(null)}
         />
       )}
     </div>
   );
 }
-

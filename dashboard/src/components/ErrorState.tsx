@@ -1,21 +1,27 @@
-﻿import { AlertCircle } from 'lucide-react';
+﻿import { AlertTriangle, RotateCw } from 'lucide-react';
+import { IconTile } from './ui';
 
 export interface ErrorStateProps {
   message?: string;
+  hint?: string;
   onRetry?: () => void;
 }
 
-export function ErrorState({ message = "We couldn't load this.", onRetry }: ErrorStateProps) {
+export function ErrorState({
+  message = "We couldn't load this.",
+  hint = 'SentinelAI may still be starting up. Try again in a few seconds.',
+  onRetry,
+}: ErrorStateProps) {
   return (
-    <div className="flex flex-col items-center justify-center p-8 rounded-2xl bg-red-50 dark:bg-red-900/10 text-center">
-      <AlertCircle className="text-red-500 mb-3" size={32} />
-      <p className="text-red-700 dark:text-red-400 font-medium mb-4">{message}</p>
+    <div className="glass flex flex-col items-center justify-center text-center px-6 py-12 animate-fade-up">
+      <IconTile tone="danger" size="lg">
+        <AlertTriangle size={26} />
+      </IconTile>
+      <p className="mt-4 text-base font-semibold text-fg">{message}</p>
+      <p className="mt-1 text-sm text-fg-muted max-w-md">{hint}</p>
       {onRetry && (
-        <button 
-          onClick={onRetry}
-          className="px-4 py-2 bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50 rounded-lg font-medium transition-colors"
-        >
-          Retry
+        <button onClick={onRetry} className="btn btn-secondary mt-5">
+          <RotateCw size={15} /> Try again
         </button>
       )}
     </div>

@@ -24,6 +24,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from config.integrity import load_verified
 from config.paths import MODEL_ENCODER, MODEL_FEATURES, MODEL_XGB
 
 _AMBIGUOUS_PORT_LABELS = frozenset({"DoS", "FTP-BruteForce", "SSH-Bruteforce"})
@@ -45,24 +46,30 @@ class CicXgbAdapter:
         self.model: Any = None
         self.label_encoder: Any = None
         self.feature_names: List[str] = []
+        self._classes: List[str] = []
         self.is_loaded: bool = False
 
     def load(self) -> bool:
-        import joblib
-
         missing = [p for p in (self.model_path, self.encoder_path, self.features_path) if not p.exists()]
         if missing:
             raise FileNotFoundError(
                 "Missing Phase-1 model artefacts: " + ", ".join(str(p) for p in missing)
             )
 
-        self.model = joblib.load(self.model_path)
-        self.label_encoder = joblib.load(self.encoder_path)
-        self.feature_names = list(joblib.load(self.features_path))
+        self.model = load_verified(self.model_path)
+        self.label_encoder = load_verified(self.encoder_path)
+        self.feature_names = list(load_verified(self.features_path))
         if len(self.feature_names) != 77:
             raise ValueError(
                 f"Expected 77 feature columns (no Dst Port); got {len(self.feature_names)}"
             )
+        # One row per call: a multi-threaded predict costs more in thread wake-ups than it saves.
+        if hasattr(self.model, "set_params"):
+            try:
+                self.model.set_params(n_jobs=1)
+            except Exception:
+                pass
+        self._classes = [str(c) for c in self.label_encoder.classes_]
         self.is_loaded = True
         return True
 
@@ -124,13 +131,13 @@ class CicXgbAdapter:
             self.load()
 
         X = self.vectorize(raw_features)
-        pred_id = int(self.model.predict(X)[0])
-        label = str(self.label_encoder.inverse_transform([pred_id])[0])
-
+        # multi:softprob: predict() is argmax(predict_proba()), so one call gives both.
         probs = self.model.predict_proba(X)[0]
-        classes = [str(c) for c in self.label_encoder.classes_]
+        pred_id = int(np.argmax(probs))
+        classes = getattr(self, "_classes", None) or [str(c) for c in self.label_encoder.classes_]
+        label = classes[pred_id]
         prob_dict = {name: round(float(p), 4) for name, p in zip(classes, probs)}
-        confidence = float(max(probs))
+        confidence = float(probs[pred_id])
 
         if dst_port is None:
             dst_port = raw_features.get("Dst Port", raw_features.get("dst_port"))

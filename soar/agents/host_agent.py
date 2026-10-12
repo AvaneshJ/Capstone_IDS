@@ -41,6 +41,8 @@ logger = logging.getLogger("SentinelAI.HostAgent")
 ML_LABELS = {
     "normal": "Normal",
     "benign": "Normal",
+    "anomalous": "Anomalous",
+    "anomaly": "Anomalous",
     "stealer": "Stealer",
     "infostealer": "Stealer",
     "ransomware": "Ransomware",
@@ -122,6 +124,7 @@ class HostSOARAgent(BaseAgent):
 
             # 5. Formulate SOAR Action Plan
             soar_action, action_status, remediation = self._plan_and_execute_response(process_info, file_event, classification, risk_score)
+            reasons = self._explain(process_info, file_event, classification, raw_data.get("reasons"))
 
             # 6. Assemble Final HostIncident
             incident = HostIncident(
@@ -139,6 +142,7 @@ class HostSOARAgent(BaseAgent):
                 soar_action=soar_action,
                 action_status=action_status,
                 remediation_notes=remediation,
+                reasons=reasons,
                 raw_event=raw_data
             )
 
@@ -226,17 +230,20 @@ class HostSOARAgent(BaseAgent):
         """
         Correlate process and file access to determine if action is Normal or InfoStealer.
         """
+        is_sensitive_file = self._is_sensitive(file_event)
+        is_legit_browser = process.process_name in LEGIT_BROWSERS
+
         # Pre-classified by Member 2's HIDS model: keep its label and its scores
         ml_label = ML_LABELS.get(str(preset_label).strip().lower())
         if ml_label:
             is_normal = ml_label == "Normal"
             confidence = self._unit_interval(ml_confidence, 0.98 if is_normal else 0.95)
             anomaly_score = self._unit_interval(ml_anomaly_score, 0.05 if is_normal else 0.88)
+            if ml_label == "Anomalous" and is_sensitive_file and not is_legit_browser:
+                ml_label = "Stealer"
             return ml_label, confidence, anomaly_score
 
         # Heuristic Correlation:
-        is_sensitive_file = any(target.lower() in file_event.file_path.lower() for target in SENSITIVE_TARGETS)
-        is_legit_browser = process.process_name in LEGIT_BROWSERS
 
         # Unauthorized process accessing browser credentials = High Probability Stealer
         if is_sensitive_file and not is_legit_browser:
@@ -249,6 +256,11 @@ class HostSOARAgent(BaseAgent):
 
         # Normal application behavior
         return "Normal", 0.96, 0.05
+
+    @staticmethod
+    def _is_sensitive(file_event: HostFileEvent) -> bool:
+        path = file_event.file_path.lower()
+        return bool(path) and any(target.lower() in path for target in SENSITIVE_TARGETS)
 
     @staticmethod
     def _unit_interval(value: Any, default: float) -> float:
@@ -271,6 +283,10 @@ class HostSOARAgent(BaseAgent):
         """
         if classification == "Normal":
             return 0.5, SeverityLevel.LOW
+        if classification == "Anomalous":
+            # Behaviour alone (no protected file touched) never reaches HIGH: 4.25 - 6.5.
+            score = round(2.0 + 4.5 * anomaly_score, 2)
+            return score, (SeverityLevel.MEDIUM if score >= 4.0 else SeverityLevel.LOW)
 
         base_weight = 7.5  # Stealer baseline weight
         file_bonus = 0.0
@@ -298,7 +314,7 @@ class HostSOARAgent(BaseAgent):
 
     def _map_mitre_attack(self, file_event: HostFileEvent, classification: str) -> tuple[str, str, str]:
         """Map to MITRE ATT&CK matrix."""
-        if classification == "Normal":
+        if classification in ("Normal", "Anomalous"):
             return "", "", ""
 
         for target_name, meta in SENSITIVE_TARGETS.items():
@@ -306,6 +322,31 @@ class HostSOARAgent(BaseAgent):
                 return meta["mitre_id"], meta["mitre_name"], "Credential Access"
 
         return "T1005", "Data from Local System", "Collection"
+
+    def _explain(
+        self,
+        process: HostProcessInfo,
+        file_event: HostFileEvent,
+        classification: str,
+        model_reasons: Any,
+    ) -> List[str]:
+        """Plain-language reasons this event was flagged, shown to the user with the alert."""
+        if classification == "Normal":
+            return []
+        reasons: List[str] = []
+        if file_event.file_path:
+            owner = file_event.target_browser if file_event.target_browser != "System" else "its owning app"
+            reasons.append(
+                f"{process.process_name} opened {file_event.file_type or 'a protected file'} "
+                f"({file_event.file_path}), which only {owner} should read."
+            )
+        if isinstance(model_reasons, (list, tuple)):
+            reasons.extend(str(r) for r in model_reasons if r)
+        elif process.parent_name in SUSPICIOUS_PARENTS:
+            reasons.append(f"It was started by a command shell ({process.parent_name}).")
+        if not file_event.file_path:
+            reasons.append("It did not touch your saved passwords, cookies or any other protected file.")
+        return reasons
 
     def _plan_and_execute_response(
         self,
@@ -315,8 +356,20 @@ class HostSOARAgent(BaseAgent):
         risk_score: float
     ) -> tuple[HostActionType, str, str]:
         """Formulate SOAR response and execute process termination."""
-        if classification == "Normal" or risk_score < 7.0:
+        if classification == "Normal":
             return HostActionType.LOG_ONLY, "LOGGED", "Normal activity logged to host database."
+
+        # A model score alone is never grounds to kill: developer tools, scripts and installers
+        # behave like this too. Termination needs a recorded file access as evidence.
+        if not file_event.file_path:
+            return (
+                HostActionType.ALERT_ONLY,
+                "ALERT_DISPATCHED",
+                f"{process.process_name} was flagged for unusual behaviour only; it did not touch any protected file, "
+                "so it was not stopped. If you started it yourself, no action is needed.",
+            )
+        if risk_score < 7.0:
+            return HostActionType.ALERT_ONLY, "ALERT_DISPATCHED", "Risk below the automatic-response threshold; alert raised for review."
 
         # High/Critical Risk Stealer -> Trigger Process Termination
         if process.pid <= 4:

@@ -1,6 +1,7 @@
 export * from './AlertCard';
+export * from './BrandMark';
 export * from './ConfirmModal';
-export * from './ConnectionPill';
+export * from './ConnectionStatus';
 export * from './EmptyState';
 export * from './ErrorState';
 export * from './InfoTooltip';
@@ -13,3 +14,4 @@ export * from './StatusBanner';
 export * from './StoryFlow';
 export * from './TechDetails';
 export * from './TestModeBadge';
+export * from './ui';

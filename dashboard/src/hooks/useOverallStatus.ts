@@ -42,7 +42,7 @@ export function useOverallStatus(): OverallStatusResult {
     if (healthError) {
       return {
         status: 'offline' as OverallStatus,
-        message: "SentinelAI can't reach its protection engine. Make sure it's running.",
+        message: "SentinelAI can't reach its protection engine right now. It may still be starting up.",
         threatCount: 0,
         isLoading: false,
       };
@@ -82,7 +82,7 @@ export function useOverallStatus(): OverallStatusResult {
     if (hasFailed || hasUnhandledCritical) {
       return {
         status: 'action_needed' as OverallStatus,
-        message: 'Something needs your attention.',
+        message: "A serious threat wasn't stopped automatically. Open Activity to see what to do.",
         threatCount,
         isLoading,
       };
@@ -99,7 +99,7 @@ export function useOverallStatus(): OverallStatusResult {
 
     return {
       status: 'protected' as OverallStatus,
-      message: "You're protected. Nothing needs your attention.",
+      message: 'Nothing needs your attention. SentinelAI is watching in the background.',
       threatCount: 0,
       isLoading,
     };

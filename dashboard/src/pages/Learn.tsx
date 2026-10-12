@@ -1,87 +1,107 @@
-﻿import { useContext } from 'react';
+﻿import { useContext, useMemo, useState } from 'react';
+import { Search, Zap, Waves, Cpu, KeyRound, Radar, DoorOpen, Globe, AlertCircle, EyeOff, Lock, Bug, ShieldCheck, Lightbulb, type LucideIcon } from 'lucide-react';
 import { ExpertContext } from '../App';
 import { translateThreat } from '../lib/translate';
-import * as Icons from 'lucide-react';
+import { IconTile } from '../components/ui';
+
+interface LearnItem {
+  id: string;
+  icon: LucideIcon;
+  where: 'internet' | 'computer';
+  detects: boolean;
+}
+
+const THREATS: LearnItem[] = [
+  { id: 'DDoS', icon: Waves, where: 'internet', detects: true },
+  { id: 'DoS', icon: Zap, where: 'internet', detects: true },
+  { id: 'SSH-Bruteforce', icon: KeyRound, where: 'internet', detects: true },
+  { id: 'FTP-BruteForce', icon: KeyRound, where: 'internet', detects: true },
+  { id: 'PortScan', icon: Radar, where: 'internet', detects: true },
+  { id: 'Botnet', icon: Cpu, where: 'internet', detects: true },
+  { id: 'Stealer', icon: EyeOff, where: 'computer', detects: true },
+  { id: 'AnomalousTraffic', icon: AlertCircle, where: 'internet', detects: true },
+  { id: 'Infiltration', icon: DoorOpen, where: 'internet', detects: false },
+  { id: 'WebAttack', icon: Globe, where: 'internet', detects: false },
+  { id: 'Ransomware', icon: Lock, where: 'computer', detects: false },
+  { id: 'Malware', icon: Bug, where: 'computer', detects: false },
+];
+
+type Filter = 'all' | 'internet' | 'computer';
 
 export function Learn() {
   const { expert } = useContext(ExpertContext);
-  
-  const threatsToShow = [
-    'DDoS', 'DoS', 'Botnet', 'SSH-Bruteforce', 'FTP-BruteForce', 
-    'BruteForce', 'PortScan', 'Infiltration', 'WebAttack', 
-    'AnomalousTraffic', 'Stealer', 'Ransomware', 'Malware'
-  ];
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<Filter>('all');
 
-  const getIcon = (name: string) => {
-    const IconComponent = (Icons as any)[name] || Icons.ShieldAlert;
-    return <IconComponent className="w-8 h-8" />;
-  };
+  const items = useMemo(() => {
+    const q = query.toLowerCase();
+    return THREATS.filter((t) => filter === 'all' || t.where === filter)
+      .map((t) => ({ ...t, info: translateThreat(t.id) }))
+      .filter((t) => !q || `${t.info.friendlyName} ${t.info.explanation}`.toLowerCase().includes(q));
+  }, [query, filter]);
 
   return (
-    <div className="aesthetic-icons space-y-8 max-w-7xl mx-auto p-4">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900  mb-2">Learn About Threats</h1>
-        <p className="text-dark dark:text-dark">
-          Understand the types of attacks SentinelAI protects you from.
-        </p>
+    <div className="space-y-5">
+      <div className="glass p-4 flex flex-wrap items-center gap-3 animate-fade-up">
+        <div className="relative flex-1 min-w-[260px] max-w-md">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-fg-subtle" />
+          <input className="field pl-9" placeholder="Search threats, for example 'password'" value={query} onChange={(e) => setQuery(e.target.value)} />
+        </div>
+        <div className="segmented">
+          {(['all', 'internet', 'computer'] as Filter[]).map((f) => (
+            <button key={f} data-active={filter === f} onClick={() => setFilter(f)}>
+              {f === 'all' ? 'All threats' : f === 'internet' ? 'From the internet' : 'On your computer'}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {threatsToShow.map((threatType) => {
-          // If THREAT_MAP might not have everything directly exported, we can just use translateThreat
-          // But since the instructions say use THREAT_MAP data, we will try to use it if available or fallback.
-          // Assuming translateThreat handles these properly.
-          const translated = translateThreat(threatType);
-          
-          // Heuristic to pick an icon since lucide-react names are needed.
-          // In a real app we might map these explicitly. We'll use ShieldAlert as default.
-          let iconName = 'ShieldAlert';
-          if (threatType.includes('DDoS') || threatType.includes('DoS')) iconName = 'Zap';
-          if (threatType.includes('Bruteforce') || threatType.includes('BruteForce')) iconName = 'Key';
-          if (threatType.includes('Botnet')) iconName = 'Cpu';
-          if (threatType.includes('PortScan')) iconName = 'Search';
-          if (threatType.includes('Stealer')) iconName = 'EyeOff';
-          if (threatType.includes('Ransomware')) iconName = 'Lock';
-          if (threatType.includes('Malware')) iconName = 'Bug';
-          if (threatType.includes('WebAttack')) iconName = 'Globe';
-          if (threatType.includes('Infiltration')) iconName = 'LogOut';
-
-          return (
-            <div key={threatType} className="bg-[var(--color-sage)] p-6 rounded-[2rem] flex flex-col h-full">
-              <div className="flex items-center gap-4 mb-4">
-                <div className="p-3 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-lg">
-                  {getIcon(iconName)}
+      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4">
+        {items.map((t) => (
+          <article key={t.id} className="glass glass-hover p-5 flex flex-col animate-fade-up">
+            <div className="flex items-start gap-3">
+              <IconTile tone={t.where === 'internet' ? 'accent' : 'mint'}>
+                <t.icon size={18} />
+              </IconTile>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-[15px] font-semibold text-fg leading-snug">{t.info.friendlyName}</h2>
+                <div className="flex gap-1.5 mt-1.5">
+                  <span className="tag tag-neutral">{t.where === 'internet' ? 'Internet' : 'Computer'}</span>
+                  {t.detects ? <span className="tag tag-safe">SentinelAI detects this</span> : <span className="tag tag-neutral">Not covered yet</span>}
                 </div>
-                <h2 className="text-xl font-bold text-gray-900 ">{translated.friendlyName}</h2>
               </div>
-              
-              <div className="aesthetic-icons space-y-4 flex-grow">
+            </div>
+
+            <div className="mt-4 space-y-3 flex-1">
+              <div>
+                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle mb-1">What is it?</h3>
+                <p className="text-sm text-fg-muted leading-relaxed">{t.info.explanation}</p>
+              </div>
+              <div>
+                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle mb-1">How SentinelAI helps</h3>
+                <p className="text-sm text-fg-muted leading-relaxed flex gap-2">
+                  <ShieldCheck size={15} className="text-safe shrink-0 mt-0.5" />
+                  {!t.detects
+                    ? "SentinelAI doesn't specifically recognise this yet. Keep Windows and your antivirus up to date."
+                    : t.where === 'internet'
+                      ? 'Our AI recognises the pattern in your network traffic and blocks the attacker.'
+                      : 'We notice when an unknown program touches your private files and stop it.'}
+                </p>
+              </div>
+              {t.info.advice && (
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-900  uppercase tracking-wider mb-1">What is it?</h3>
-                  <p className="text-dark  text-sm">{translated.explanation}</p>
-                </div>
-                
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900  uppercase tracking-wider mb-1">How SentinelAI protects you</h3>
-                  <p className="text-dark  text-sm">
-                    Automatically detects the suspicious patterns and blocks the source before it can cause harm.
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle mb-1">What you can do</h3>
+                  <p className="text-sm text-fg-muted leading-relaxed flex gap-2">
+                    <Lightbulb size={15} className="text-sun shrink-0 mt-0.5" />
+                    {t.info.advice}
                   </p>
-                </div>
-
-                <div>
-                  <h3 className="text-sm font-semibold text-gray-900  uppercase tracking-wider mb-1">What you can do</h3>
-                  <p className="text-dark  text-sm">{translated.advice}</p>
-                </div>
-              </div>
-              
-              {expert && (
-                <div className="mt-4 pt-4 border-t border-gray-100 border-transparent">
-                  <p className="text-xs font-mono text-dark">Technical ID: {threatType}</p>
                 </div>
               )}
             </div>
-          );
-        })}
+
+            {expert && <p className="mt-4 pt-3 border-t border-line text-[11px] font-mono text-fg-subtle">Model label: {t.id}</p>}
+          </article>
+        ))}
       </div>
     </div>
   );

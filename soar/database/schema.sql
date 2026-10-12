@@ -130,3 +130,22 @@ CREATE INDEX IF NOT EXISTS idx_host_incidents_process ON host_incidents(process_
 CREATE INDEX IF NOT EXISTS idx_host_incidents_classification ON host_incidents(classification);
 CREATE INDEX IF NOT EXISTS idx_host_incidents_risk ON host_incidents(risk_score);
 
+-- 7. Live traffic counters (benign live flows are counted here instead of stored as incidents)
+CREATE TABLE IF NOT EXISTS traffic_stats (
+    day TEXT PRIMARY KEY,          -- local date, YYYY-MM-DD
+    flows_checked INTEGER NOT NULL DEFAULT 0
+);
+
+-- 8. Tamper-evident HMAC chain over incidents, host_incidents and audit_logs
+CREATE TABLE IF NOT EXISTS evidence_chain (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp REAL NOT NULL,
+    table_name TEXT NOT NULL,
+    record_key TEXT NOT NULL,
+    record_hash TEXT NOT NULL,
+    prev_hash TEXT NOT NULL,
+    chain_hash TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_chain_record ON evidence_chain(table_name, record_key);
+

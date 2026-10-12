@@ -14,7 +14,7 @@ import psutil
 from typing import Dict, List, Any, Optional, Union
 
 from core.event_bus import EventBus, Event
-from core.schemas import Incident, FlowEvent, SystemMetrics, AgentStatus, HostIncident
+from core.schemas import Incident, FlowEvent, SystemMetrics, AgentStatus, HostIncident, DetectionResult
 from database.db_manager import DatabaseManager
 from rules.policy_engine import PolicyEngine
 
@@ -121,11 +121,14 @@ class SentinelOrchestrator:
         self._metrics_thread.start()
         logger.info("All %d SentinelAI Agents initialized and operational.", len(self.agents))
 
-    def process_flow(self, raw_flow: Dict[str, Any]) -> Incident:
+    def process_flow(self, raw_flow: Dict[str, Any], detection_override: Optional[DetectionResult] = None) -> Incident:
         """
         End-to-End synchronous pipeline execution for a single network flow.
         Flow -> PacketAgent -> DetectionAgent -> ThreatAgent -> RiskAgent -> DecisionAgent
              -> [FirewallAgent, AlertAgent, LoggingAgent, LLMAgent]
+
+        detection_override: a detection made outside the per-flow model (e.g. the live
+        monitor's multi-flow port-scan rule); skips step 2.
         """
         self.total_flows_processed += 1
 
@@ -133,7 +136,7 @@ class SentinelOrchestrator:
         flow = self.packet_agent.sanitize_flow(raw_flow)
 
         # 2. ML Inference / Anomaly Detection
-        detection = self.detection_agent.predict(flow)
+        detection = detection_override or self.detection_agent.predict(flow)
         if detection.attack_type.upper() != "BENIGN":
             self.total_threats_detected += 1
 

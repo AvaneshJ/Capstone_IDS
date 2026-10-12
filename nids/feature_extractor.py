@@ -41,9 +41,9 @@ ALIASES: Dict[str, str] = {
 
 
 def load_feature_names() -> list:
-    import joblib
+    from config.integrity import load_verified
 
-    return list(joblib.load(MODEL_FEATURES))
+    return list(load_verified(MODEL_FEATURES))
 
 
 def normalize_keys(partial: Mapping[str, Any]) -> Dict[str, Any]:

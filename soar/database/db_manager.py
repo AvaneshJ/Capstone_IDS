@@ -6,7 +6,9 @@ and analytical aggregation queries for the SOAR pipeline, reports, and SOC dashb
 
 from __future__ import annotations
 import os
+import sys
 import json
+import hashlib
 import sqlite3
 import logging
 import threading
@@ -16,10 +18,24 @@ from pathlib import Path
 
 from core.schemas import Incident, FirewallRule, SystemMetrics, SeverityLevel, HostIncident
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from config import security  # noqa: E402
+
 logger = logging.getLogger("SentinelAI.DatabaseManager")
 
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "database", "sentinel.db")
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
+
+CHAINED_TABLES = {"incidents": "incident_id", "host_incidents": "incident_id", "audit_logs": "id"}
+GENESIS_HASH = "0" * 64
+
+
+def record_hash(row: Dict[str, Any]) -> str:
+    data = {k: v for k, v in row.items() if k not in ("id", "created_at")}
+    return hashlib.sha256(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
 
 
 class DatabaseManager:
@@ -31,6 +47,7 @@ class DatabaseManager:
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
         self.db_path = db_path
         self._lock = threading.RLock()
+        self._chain_key: Optional[bytes] = None
         
         # Ensure parent directory exists
         os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
@@ -109,7 +126,9 @@ class DatabaseManager:
                         raw_json_str,
                         incident.status
                     ))
+                    head = self._append_chain(conn, "incidents", incident.incident_id)
                     conn.commit()
+                self._write_anchor(head)
                 return True
             except Exception as exc:
                 logger.error("Failed to save incident %s: %s", incident.incident_id, exc)
@@ -182,7 +201,9 @@ class DatabaseManager:
                         host_inc.remediation_notes,
                         raw_json_str
                     ))
+                    head = self._append_chain(conn, "host_incidents", host_inc.incident_id)
                     conn.commit()
+                self._write_anchor(head)
                 return True
             except Exception as exc:
                 logger.error("Failed to save host incident %s: %s", host_inc.incident_id, exc)
@@ -315,12 +336,136 @@ class DatabaseManager:
             query = "INSERT INTO audit_logs (timestamp, agent_name, action, details, level) VALUES (?, ?, ?, ?, ?)"
             try:
                 with self._get_connection() as conn:
-                    conn.execute(query, (time.time(), agent_name, action, details, level))
+                    cur = conn.execute(query, (time.time(), agent_name, action, details, level))
+                    head = self._append_chain(conn, "audit_logs", str(cur.lastrowid))
                     conn.commit()
+                self._write_anchor(head)
                 return True
             except Exception as exc:
                 logger.error("Failed to save audit log: %s", exc)
                 return False
+
+    # -------------------------------------------------------------
+    # Tamper-evident evidence chain
+    # -------------------------------------------------------------
+
+    def _key(self) -> bytes:
+        if self._chain_key is None:
+            self._chain_key = security.integrity_key()
+        return self._chain_key
+
+    def _link(self, seq: int, table: str, key: str, rec_hash: str, prev_hash: str) -> str:
+        return security.sign(f"{seq}|{table}|{key}|{rec_hash}|{prev_hash}".encode(), self._key())
+
+    def _anchor_path(self) -> Path:
+        tag = hashlib.sha1(os.path.normcase(os.path.abspath(self.db_path)).encode()).hexdigest()[:12]
+        return security.data_dir() / f"evidence_anchor_{tag}.json"
+
+    def _read_anchor(self) -> Optional[Dict[str, Any]]:
+        try:
+            anchor = json.loads(self._anchor_path().read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            return None
+        body = json.dumps({k: anchor.get(k) for k in ("seq", "chain_hash", "breaks")}, sort_keys=True).encode()
+        anchor["valid"] = security.tokens_equal(anchor.get("sig"), security.sign(body, self._key()))
+        return anchor
+
+    def _append_chain(self, conn: sqlite3.Connection, table: str, key: str) -> Optional[Dict[str, Any]]:
+        """Link the stored row into the chain. Returns the new head plus the head it replaced."""
+        try:
+            col = CHAINED_TABLES[table]
+            row = conn.execute(f"SELECT * FROM {table} WHERE {col} = ?", (key,)).fetchone()
+            last = conn.execute("SELECT seq, chain_hash FROM evidence_chain ORDER BY seq DESC LIMIT 1").fetchone()
+            prev_hash = last["chain_hash"] if last else GENESIS_HASH
+            rec_hash = record_hash(dict(row))
+            cur = conn.execute(
+                "INSERT INTO evidence_chain (timestamp, table_name, record_key, record_hash, prev_hash, chain_hash) "
+                "VALUES (?, ?, ?, ?, ?, '')",
+                (time.time(), table, key, rec_hash, prev_hash),
+            )
+            seq = cur.lastrowid
+            chain_hash = self._link(seq, table, key, rec_hash, prev_hash)
+            conn.execute("UPDATE evidence_chain SET chain_hash = ? WHERE seq = ?", (chain_hash, seq))
+            return {"seq": seq, "chain_hash": chain_hash,
+                    "prev_seq": last["seq"] if last else 0, "prev_hash": prev_hash}
+        except Exception as exc:
+            logger.error("Evidence chain append failed for %s/%s: %s", table, key, exc)
+            return None
+
+    def _write_anchor(self, head: Optional[Dict[str, Any]]) -> None:
+        """Keep the chain head outside the DB so truncating or swapping the DB is detectable."""
+        if not head:
+            return
+        try:
+            anchor = self._read_anchor()
+            breaks = list(anchor.get("breaks") or []) if anchor else []
+            if anchor and (not anchor["valid"] or anchor.get("seq") != head["prev_seq"]
+                           or anchor.get("chain_hash") != head["prev_hash"]):
+                breaks.append({"at": time.time(), "anchor_seq": anchor.get("seq"), "db_seq": head["prev_seq"]})
+                logger.critical("Evidence chain head did not match its anchor: database was edited or replaced")
+            body = {"seq": head["seq"], "chain_hash": head["chain_hash"], "breaks": breaks[-20:]}
+            sig = security.sign(json.dumps(body, sort_keys=True).encode(), self._key())
+            path = self._anchor_path()
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({**body, "sig": sig}), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception as exc:
+            logger.error("Could not update evidence anchor: %s", exc)
+
+    def verify_evidence_chain(self) -> Dict[str, Any]:
+        """Walk the chain and compare it with the stored rows and the external anchor."""
+        problems: List[str] = []
+        with self._lock:
+            with self._get_connection() as conn:
+                entries = conn.execute("SELECT * FROM evidence_chain ORDER BY seq").fetchall()
+                prev_hash, prev_seq = GENESIS_HASH, 0
+                latest: Dict[tuple, str] = {}
+                for e in entries:
+                    if e["seq"] != prev_seq + 1:
+                        problems.append(f"chain entries {prev_seq + 1}..{e['seq'] - 1} were deleted")
+                    elif e["prev_hash"] != prev_hash:
+                        problems.append(f"chain entry {e['seq']} does not link to the previous entry")
+                    if self._link(e["seq"], e["table_name"], e["record_key"], e["record_hash"], e["prev_hash"]) != e["chain_hash"]:
+                        problems.append(f"chain entry {e['seq']} was forged or edited")
+                    prev_hash, prev_seq = e["chain_hash"], e["seq"]
+                    latest[(e["table_name"], e["record_key"])] = e["record_hash"]
+
+                first_ts = entries[0]["timestamp"] if entries else None
+                for table, col in CHAINED_TABLES.items():
+                    rows = {str(r[col]): dict(r) for r in conn.execute(f"SELECT * FROM {table}")}
+                    for (t, key), rec_hash in latest.items():
+                        if t != table:
+                            continue
+                        row = rows.get(key)
+                        if row is None:
+                            problems.append(f"{table} record {key} was deleted")
+                        elif record_hash(row) != rec_hash:
+                            problems.append(f"{table} record {key} was modified")
+                    if first_ts is not None:
+                        for key, row in rows.items():
+                            if (table, key) not in latest and float(row.get("timestamp") or 0) >= first_ts:
+                                problems.append(f"{table} record {key} was inserted outside the chain")
+
+        anchor = self._read_anchor()
+        if anchor is not None:
+            if not anchor["valid"]:
+                problems.append("evidence anchor file was forged or edited")
+            elif anchor.get("seq", 0) > prev_seq:
+                problems.append(f"database is missing chain entries {prev_seq + 1}..{anchor['seq']} (truncated or replaced)")
+            elif anchor.get("seq") == prev_seq and anchor.get("chain_hash") != prev_hash:
+                problems.append("chain head differs from its anchor (database replaced)")
+            for b in anchor.get("breaks") or []:
+                problems.append(f"chain head mismatch recorded at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(b.get('at', 0)))}")
+        elif entries:
+            problems.append("evidence anchor file is missing")
+
+        return {
+            "ok": not problems,
+            "entries": len(entries),
+            "problem_count": len(problems),
+            "problems": problems[:50],
+            "checked_at": time.time(),
+        }
 
     # -------------------------------------------------------------
     # Whitelist & Aggregation Analytics for Dashboard (Member 4)
@@ -359,7 +504,7 @@ class DatabaseManager:
                 GROUP_CONCAT(DISTINCT attack_type) as attack_types,
                 MAX(timestamp) as last_seen
             FROM incidents
-            WHERE attack_type != 'BENIGN'
+            WHERE UPPER(attack_type) != 'BENIGN'
             GROUP BY src_ip
             ORDER BY incident_count DESC, max_risk_score DESC
             LIMIT ?
@@ -368,6 +513,20 @@ class DatabaseManager:
                 cursor = conn.cursor()
                 cursor.execute(query, (limit,))
                 return [dict(row) for row in cursor.fetchall()]
+
+    def add_checked_flows(self, count: int, day: Optional[str] = None) -> None:
+        """Add live benign flows (not stored as incidents) to today's counter."""
+        if count <= 0:
+            return
+        day = day or time.strftime("%Y-%m-%d")
+        with self._lock:
+            with self._get_connection() as conn:
+                conn.execute(
+                    "INSERT INTO traffic_stats (day, flows_checked) VALUES (?, ?) "
+                    "ON CONFLICT(day) DO UPDATE SET flows_checked = flows_checked + excluded.flows_checked",
+                    (day, count),
+                )
+                conn.commit()
 
     def get_attack_distribution(self) -> Dict[str, int]:
         """Get incident breakdown by attack type."""
@@ -390,18 +549,21 @@ class DatabaseManager:
                 cursor.execute("SELECT COUNT(*) FROM incidents")
                 total_incidents = cursor.fetchone()[0]
 
-                cursor.execute("SELECT COUNT(*) FROM incidents WHERE attack_type != 'BENIGN'")
+                cursor.execute("SELECT COALESCE(SUM(flows_checked), 0) FROM traffic_stats")
+                live_benign_flows = cursor.fetchone()[0]
+
+                cursor.execute("SELECT COUNT(*) FROM incidents WHERE UPPER(attack_type) != 'BENIGN'")
                 total_threats = cursor.fetchone()[0]
 
                 cursor.execute("SELECT COUNT(*) FROM blocked_ips WHERE status = 'ACTIVE'")
                 active_blocks = cursor.fetchone()[0]
 
-                cursor.execute("SELECT AVG(risk_score) FROM incidents WHERE attack_type != 'BENIGN'")
+                cursor.execute("SELECT AVG(risk_score) FROM incidents WHERE UPPER(attack_type) != 'BENIGN'")
                 avg_risk_row = cursor.fetchone()[0]
                 avg_risk = round(avg_risk_row, 2) if avg_risk_row is not None else 0.0
 
             return {
-                "total_flows_analyzed": total_incidents,
+                "total_flows_analyzed": total_incidents + live_benign_flows,
                 "total_threats_detected": total_threats,
                 "active_firewall_blocks": active_blocks,
                 "average_threat_risk": avg_risk,

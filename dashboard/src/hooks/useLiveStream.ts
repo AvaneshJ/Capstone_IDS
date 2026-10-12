@@ -2,6 +2,9 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { translateThreat, translateSeverity, isBenign } from '../lib/translate';
+import { desktop, navigateTo } from '../lib/desktop';
+import { playAlertSound } from '../lib/sound';
+import { API_BASE, getApiToken } from '../api/client';
 
 export type ConnectionState = 'connected' | 'reconnecting' | 'offline';
 
@@ -28,15 +31,8 @@ export function alertLink(n: Pick<LiveNotification, 'source' | 'incidentId'>): s
   return n.incidentId ? `/activity/${n.source}/${n.incidentId}` : '/activity';
 }
 
-// The live stream hook runs above <BrowserRouter>, so navigate the way react-router listens for.
-function navigateTo(path: string) {
-  window.history.pushState({}, '', path);
-  window.dispatchEvent(new PopStateEvent('popstate'));
-}
-
 function defaultWsUrl(): string {
-  const base = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
-  return base.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws/live-stream';
+  return API_BASE.replace(/^http/, 'ws').replace(/\/$/, '') + '/ws/live-stream';
 }
 
 export function useLiveStream(options: LiveStreamOptions = {}) {
@@ -58,9 +54,17 @@ export function useLiveStream(options: LiveStreamOptions = {}) {
     setNotifications((prev) => prev.map((n) => ({ ...n, isNew: false })));
   }, []);
 
+  // One incident arrives as THREAT_ALERT + NEW_INCIDENT, and floods arrive in bursts: refetch once per burst.
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const refreshData = useCallback(() => {
-    for (const key of LIVE_QUERY_KEYS) queryClient.invalidateQueries({ queryKey: [key] });
+    if (refreshTimer.current) return;
+    refreshTimer.current = setTimeout(() => {
+      refreshTimer.current = undefined;
+      for (const key of LIVE_QUERY_KEYS) queryClient.invalidateQueries({ queryKey: [key] });
+    }, 1000);
   }, [queryClient]);
+
+  useEffect(() => () => clearTimeout(refreshTimer.current), []);
 
   const handleThreatAlert = useCallback((alert: any) => {
     refreshData();
@@ -88,6 +92,15 @@ export function useLiveStream(options: LiveStreamOptions = {}) {
         duration: sevRaw === 'CRITICAL' ? Infinity : 8000,
         action: { label: 'View', onClick: () => navigateTo(alertLink(notification)) },
       });
+      if (localStorage.getItem('sentinel_sound') !== 'false') playAlertSound(sevRaw === 'CRITICAL');
+      if (desktop && localStorage.getItem('sentinel_desktop_notify') !== 'false') {
+        desktop.notify({
+          title: threat.friendlyName,
+          body: threat.explanation,
+          route: alertLink(notification),
+          urgent: sevRaw === 'CRITICAL',
+        });
+      }
     }
   }, [refreshData]);
 
@@ -124,9 +137,11 @@ export function useLiveStream(options: LiveStreamOptions = {}) {
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
 
-    const connect = () => {
+    const connect = async () => {
+      // Browsers can't set headers on WebSockets, so the token travels as a query parameter.
+      const token = await getApiToken(attempt > 0);
       if (disposed) return;
-      ws = new WebSocket(wsUrl);
+      ws = new WebSocket(token ? `${wsUrl}${wsUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : wsUrl);
 
       ws.onopen = () => {
         attempt = 0;
@@ -144,11 +159,11 @@ export function useLiveStream(options: LiveStreamOptions = {}) {
         setState(attempt >= 3 ? 'offline' : 'reconnecting');
         const delay = Math.min(1000 * 2 ** attempt, 15000);
         attempt++;
-        reconnectTimer = setTimeout(connect, delay);
+        reconnectTimer = setTimeout(() => void connect(), delay);
       };
     };
 
-    connect();
+    void connect();
     return () => {
       disposed = true;
       clearInterval(pingTimer);
@@ -178,7 +193,9 @@ export function useLiveStream(options: LiveStreamOptions = {}) {
   // Polling fallback while the live connection is down.
   useEffect(() => {
     if (state === 'connected') return;
-    const interval = setInterval(refreshData, 5000);
+    const interval = setInterval(() => {
+      if (!document.hidden) refreshData();
+    }, 5000);
     return () => clearInterval(interval);
   }, [state, refreshData]);
 

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { getIncidents, getHostIncidents } from '../api/endpoints';
+import { getIncidents, getHostIncidents, getSystemStatus } from '../api/endpoints';
 import type { IncidentRow, HostIncidentRow } from '../api/endpoints';
 import { translateThreat, translateSeverity, translateNetworkAction, translateHostAction, isBenign } from '../lib/translate';
 
@@ -25,12 +25,12 @@ export interface MergedAlert {
   isNew?: boolean;
 }
 
-export function networkIncidentToAlert(inc: IncidentRow): MergedAlert {
+export function networkIncidentToAlert(inc: IncidentRow, testMode = false): MergedAlert {
   const threat = translateThreat(inc.attack_type);
   const sev = translateSeverity(inc.severity);
   const actionStatus = inc.action_taken?.toUpperCase() || '';
   let actionState: MergedAlert['actionState'] = 'none';
-  if (actionStatus.includes('BLOCK') || actionStatus.includes('BAN') || actionStatus.includes('RATE')) actionState = 'done';
+  if (actionStatus.includes('BLOCK') || actionStatus.includes('BAN') || actionStatus.includes('RATE')) actionState = testMode ? 'test' : 'done';
 
   return {
     id: inc.incident_id,
@@ -91,11 +91,18 @@ export function useMergedActivity(limit: number = 100) {
     refetchInterval: 10000,
   });
 
+  const { data: status } = useQuery({
+    queryKey: ['system-status'],
+    queryFn: getSystemStatus,
+    refetchInterval: 15000,
+  });
+  const testMode = status?.test_mode ?? false;
+
   const merged = useMemo((): MergedAlert[] => {
     const items: MergedAlert[] = [];
 
     for (const inc of networkData?.incidents ?? []) {
-      if (!isBenign(inc.attack_type)) items.push(networkIncidentToAlert(inc));
+      if (!isBenign(inc.attack_type)) items.push(networkIncidentToAlert(inc, testMode));
     }
     for (const inc of hostData?.host_incidents ?? []) {
       if (!isBenign(inc.classification)) items.push(hostIncidentToAlert(inc));
@@ -103,7 +110,7 @@ export function useMergedActivity(limit: number = 100) {
 
     items.sort((a, b) => b.time - a.time);
     return items;
-  }, [networkData, hostData]);
+  }, [networkData, hostData, testMode]);
 
   return {
     alerts: merged,

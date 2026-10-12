@@ -1,5 +1,34 @@
-const BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+import { desktop } from '../lib/desktop';
+
+export const API_BASE: string = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000';
+const BASE = API_BASE;
 const USE_MOCKS = import.meta.env.VITE_USE_MOCKS === 'true';
+export const TOKEN_HEADER = 'X-SentinelAI-Token';
+const ENV_TOKEN: string = import.meta.env.VITE_API_TOKEN || '';
+
+// Desktop: Electron's main process reads the per-install token file. Web dev: VITE_API_TOKEN.
+let tokenPromise: Promise<string> | null = null;
+
+export function getApiToken(refresh = false): Promise<string> {
+  if (!desktop?.apiToken) return Promise.resolve(ENV_TOKEN);
+  if (refresh || !tokenPromise) {
+    tokenPromise = desktop.apiToken().then((t) => t || ENV_TOKEN).catch(() => ENV_TOKEN);
+  }
+  return tokenPromise;
+}
+
+/** Synchronous variant for links opened outside fetch (web mode only; Electron adds the token itself). */
+export function withEnvToken(url: string): string {
+  if (!ENV_TOKEN || desktop) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(ENV_TOKEN)}`;
+}
+
+async function authorizedFetch(url: string, options: RequestInit | undefined, refresh: boolean): Promise<Response> {
+  const token = await getApiToken(refresh);
+  const headers = new Headers(options?.headers);
+  if (token) headers.set(TOKEN_HEADER, token);
+  return fetch(url, { ...options, headers });
+}
 const mockModules = import.meta.glob('./mocks/*.json', {
   eager: true,
   import: 'default',
@@ -49,7 +78,9 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
   }
 
   const url = `${BASE}${path}`;
-  const response = await fetch(url, options);
+  let response = await authorizedFetch(url, options, false);
+  // The engine creates the token on first start, which can be after the window loaded.
+  if (response.status === 401) response = await authorizedFetch(url, options, true);
 
   if (!response.ok) {
     throw new Error(`API Error: ${response.status} ${response.statusText}`);

@@ -1,132 +1,124 @@
 ﻿import { useContext, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { ExpertContext } from '../App';
 import { ingestFlow, ingestHostEvent } from '../api/endpoints';
 import { toast } from 'sonner';
-import { Zap, ShieldAlert, Search, EyeOff, CheckCircle, Loader2 } from 'lucide-react';
+import { Zap, KeyRound, Radar, EyeOff, CheckCircle2, Loader2, Lock, Play, Info } from 'lucide-react';
+import { IconTile } from '../components/ui';
 
 export function Demo() {
-  const { expert } = useContext(ExpertContext);
+  const { expert, setExpert } = useContext(ExpertContext);
+  const navigate = useNavigate();
   const [loadingId, setLoadingId] = useState<number | null>(null);
 
   if (!expert) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] text-center px-4">
-        <div className="p-4 bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 rounded-full mb-4">
-          <ShieldAlert className="w-12 h-12" />
-        </div>
-        <h2 className="text-2xl font-semibold text-gray-900  mb-2">Restricted Access</h2>
-        <p className="text-dark dark:text-dark max-w-md">
-          Switch to Expert view in Settings to access the Demo Panel and simulate attacks.
-        </p>
+      <div className="glass flex flex-col items-center justify-center text-center px-6 py-16 animate-fade-up">
+        <IconTile tone="sun" size="lg">
+          <Lock size={26} />
+        </IconTile>
+        <h2 className="mt-4 text-lg font-semibold text-fg">The demo panel is for experts</h2>
+        <p className="mt-1 text-sm text-fg-muted max-w-md">Switch to Expert view to send safe practice attacks and see how SentinelAI responds.</p>
+        <button onClick={() => setExpert(true)} className="btn btn-primary mt-5">
+          Switch to Expert view
+        </button>
       </div>
     );
   }
 
-  const handleSimulate = async (id: number, action: () => Promise<any>, successMsg: string) => {
+  const run = async (id: number, action: () => Promise<unknown>) => {
     setLoadingId(id);
     try {
       await action();
-      toast.success(successMsg);
-    } catch (err) {
-      toast.error('Simulation failed to send');
-      console.error(err);
+      toast.success('Practice attack sent', {
+        description: 'Watch for the alert, or open Activity.',
+        action: { label: 'Open Activity', onClick: () => navigate('/activity') },
+      });
+    } catch {
+      toast.error("Couldn't send it. Is the protection engine running?");
     } finally {
-      // Disable for 2 seconds visually, but release loading state to just show disabled
-      setTimeout(() => {
-        setLoadingId(null);
-      }, 2000);
+      setTimeout(() => setLoadingId(null), 1200);
     }
   };
 
   const demos = [
     {
       id: 1,
-      title: 'Simulate password-guessing attack (SSH)',
-      description: 'Sends a flow indicating repeated SSH connection attempts.',
-      icon: <ShieldAlert className="w-6 h-6" />,
-      color: 'text-red-600 dark:text-red-400',
-      bg: 'bg-red-50 dark:bg-red-900/20',
-      action: () => ingestFlow({ dst_port: 22, syn_flag_count: 50, flow_pkts_s: 500 })
+      title: 'Password-guessing attack (SSH)',
+      description: 'Someone repeatedly tries to log in remotely.',
+      icon: KeyRound,
+      tone: 'danger' as const,
+      action: () => ingestFlow({ dst_port: 22, syn_flag_count: 50, flow_pkts_s: 500 }),
     },
     {
       id: 2,
-      title: 'Simulate flood attack (DDoS)',
-      description: 'Sends a massive volume of packets to overwhelm the system.',
-      icon: <Zap className="w-6 h-6" />,
-      color: 'text-orange-600 dark:text-orange-400',
-      bg: 'bg-orange-50 dark:bg-orange-900/20',
-      action: () => ingestFlow({ flow_pkts_s: 50000, tot_fwd_pkts: 10000 })
+      title: 'Flood attack (DDoS)',
+      description: 'A huge burst of junk traffic to overwhelm the computer.',
+      icon: Zap,
+      tone: 'high' as const,
+      action: () => ingestFlow({ flow_pkts_s: 50000, tot_fwd_pkts: 10000 }),
     },
     {
       id: 3,
-      title: 'Simulate port scan',
-      description: 'Sends reconnaissance traffic scanning for open ports.',
-      icon: <Search className="w-6 h-6" />,
-      color: 'text-yellow-600 dark:text-yellow-400',
-      bg: 'bg-yellow-50 dark:bg-yellow-900/20',
-      action: () => ingestFlow({ dst_port: 0, syn_flag_count: 100 })
+      title: 'Port scan',
+      description: 'An outsider checking for open doors into the computer.',
+      icon: Radar,
+      tone: 'warn' as const,
+      action: () => ingestFlow({ dst_port: 0, syn_flag_count: 100 }),
     },
     {
       id: 4,
-      title: 'Simulate password-stealer program',
-      description: 'Simulates a host process accessing sensitive browser data.',
-      icon: <EyeOff className="w-6 h-6" />,
-      color: 'text-purple-600 dark:text-purple-400',
-      bg: 'bg-purple-50 dark:bg-purple-900/20',
-      action: () => ingestHostEvent({
-        pid: 40000 + Math.floor(Math.random() * 20000),
-        process_name: 'svc_update.exe',
-        parent_name: 'powershell.exe',
-        file_path: 'C:\\Users\\User\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data',
-        event_type: 'READ',
-        label: 'Stealer',
-        confidence: 0.97,
-      })
+      title: 'Password-stealing program',
+      description: 'An unknown program opens Chrome’s saved passwords.',
+      icon: EyeOff,
+      tone: 'accent' as const,
+      action: () =>
+        ingestHostEvent({
+          pid: 40000 + Math.floor(Math.random() * 20000),
+          process_name: 'svc_update.exe',
+          parent_name: 'powershell.exe',
+          file_path: 'C:\\Users\\User\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data',
+          event_type: 'READ',
+          label: 'Stealer',
+          confidence: 0.97,
+        }),
     },
     {
       id: 5,
-      title: 'Simulate normal traffic',
-      description: 'Sends standard benign network flow data.',
-      icon: <CheckCircle className="w-6 h-6" />,
-      color: 'text-emerald-600 dark:text-emerald-400',
-      bg: 'bg-emerald-50 dark:bg-emerald-900/20',
-      action: () => ingestFlow({ dst_port: 443, flow_pkts_s: 10, tot_fwd_pkts: 5 })
-    }
+      title: 'Normal traffic',
+      description: 'Ordinary web browsing. Should not raise an alert.',
+      icon: CheckCircle2,
+      tone: 'safe' as const,
+      action: () => ingestFlow({ dst_port: 443, flow_pkts_s: 10, tot_fwd_pkts: 5 }),
+    },
   ];
 
   return (
-    <div className="aesthetic-icons space-y-6 max-w-5xl mx-auto p-4">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900  mb-2">Demo Panel</h1>
-        <p className="text-dark dark:text-dark">
-          Inject mock data into the system to test the detection and alerting capabilities.
-        </p>
+    <div className="space-y-5">
+      <div className="glass-inset px-4 py-3 flex items-center gap-3 text-[13px] text-fg-muted">
+        <Info size={16} className="text-accent-soft shrink-0" />
+        These are safe, made-up events sent through the real detection pipeline. Nothing actually attacks your computer.
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4">
         {demos.map((demo) => {
-          const isLoading = loadingId === demo.id;
+          const loading = loadingId === demo.id;
           return (
-            <button
-              key={demo.id}
-              onClick={() => handleSimulate(demo.id, demo.action, 'Attack sent, watch the Home page')}
-              disabled={loadingId !== null}
-              className="text-left bg-[var(--color-sage)] p-6 rounded-[2rem] hover:border-blue-500 dark:hover:border-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed group relative overflow-hidden"
-            >
-              <div className="flex items-start gap-4">
-                <div className={`p-3 rounded-xl ${demo.bg} ${demo.color}`}>
-                  {isLoading ? <Loader2 className="w-6 h-6 animate-spin" /> : demo.icon}
-                </div>
+            <div key={demo.id} className="glass glass-hover p-5 flex flex-col animate-fade-up">
+              <div className="flex items-start gap-3">
+                <IconTile tone={demo.tone}>
+                  <demo.icon size={18} />
+                </IconTile>
                 <div>
-                  <h3 className="font-semibold text-gray-900  mb-1 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                    {demo.title}
-                  </h3>
-                  <p className="text-sm text-dark dark:text-dark">
-                    {demo.description}
-                  </p>
+                  <h3 className="text-[15px] font-semibold text-fg">{demo.title}</h3>
+                  <p className="text-[13px] text-fg-muted mt-0.5">{demo.description}</p>
                 </div>
               </div>
-            </button>
+              <button onClick={() => run(demo.id, demo.action)} disabled={loadingId !== null} className="btn btn-secondary mt-5 self-start">
+                {loading ? <Loader2 size={15} className="animate-spin" /> : <Play size={15} />}
+                {loading ? 'Sending' : 'Send'}
+              </button>
+            </div>
           );
         })}
       </div>

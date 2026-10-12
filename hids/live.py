@@ -30,10 +30,11 @@ import argparse
 import os
 import sys
 import threading
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from hids.file_monitor import to_host_event
-from hids.predict import IsolationForestPredictor, Prediction
+from hids.predict import IsolationForestPredictor, Prediction, explain_run
+from hids.tamper_monitor import protected_pids, row_finding
 
 RunKey = Tuple[int, float]
 
@@ -75,6 +76,22 @@ class HostBridge:
         self._files: Dict[RunKey, Dict[str, Any]] = {}
         self._files_by_pid: Dict[int, Dict[str, Any]] = {}
         self._alerted_files: set = set()
+        self.on_tamper: Callable[[Dict[str, Any]], Any] = self._print_tamper
+        self._protected_pids = protected_pids()
+        # Optional: runs it returns False for are not scored unless they touched a watched file.
+        self.score_filter: Optional[Callable[[Mapping[str, Any]], bool]] = None
+
+    @staticmethod
+    def _print_tamper(finding: Dict[str, Any]) -> None:
+        print(f"[hids] TAMPER {finding['title']}: {finding['details']}")
+
+    def _check_tamper(self, row: Mapping[str, Any]) -> None:
+        finding = row_finding(row, self._protected_pids, trusted_parents=self._protected_pids)
+        if finding is not None:
+            try:
+                self.on_tamper(finding)
+            except Exception as exc:
+                print(f"[hids] tamper report failed: {exc}")
 
     def orchestrator(self) -> Any:
         if self._orchestrator is None:
@@ -114,14 +131,27 @@ class HostBridge:
         return incidents
 
     def on_process_rows(self, rows: Iterable[Mapping[str, Any]]) -> List[Any]:
-        incidents = []
+        finished = []
         for row in rows:
-            if str(row.get("event", "")).upper() not in ("EXIT", "END"):
+            event = str(row.get("event", "")).upper()
+            if event == "START":
+                self._check_tamper(row)
                 continue
-            prediction = self.predictor.predict(row)
-            if not prediction.is_anomalous:
+            if event not in ("EXIT", "END"):
                 continue
-            incidents.append(self._send(self.process_event(row, prediction)))
+            if self.score_filter is not None and not self._file_for_run(row) and not self.score_filter(row):
+                continue
+            finished.append(row)
+        if not finished:
+            return []
+
+        # Scoring costs ~40 ms per call (400 trees walked in Python) whatever the row count.
+        predict_many = getattr(self.predictor, "predict_many", None)
+        predictions = predict_many(finished) if predict_many else [self.predictor.predict(r) for r in finished]
+        incidents = []
+        for row, prediction in zip(finished, predictions):
+            if prediction.is_anomalous:
+                incidents.append(self._send(self.process_event(row, prediction)))
         return incidents
 
     def process_event(self, run: Mapping[str, Any], prediction: Prediction) -> Dict[str, Any]:
@@ -138,6 +168,7 @@ class HostBridge:
             "anomaly_score": round(prediction.anomaly_score, 4),
             "decision_score": prediction.decision_score,
             "threshold": prediction.threshold,
+            "reasons": explain_run(run, prediction.features),
             "source": "hids_isolation_forest",
         }
         file_row = self._file_for_run(run)
@@ -211,8 +242,11 @@ def main() -> None:
     from hids.file_monitor import run as run_files
     from hids.process_monitor import run as run_processes
 
+    from config.heartbeat import HeartbeatSender
+
     bridge = HostBridge(dry_run=not args.live_response)
     print(f"SOAR host response: {'LIVE' if args.live_response else 'dry-run'}")
+    heartbeat = HeartbeatSender("hids_live").start()
     file_thread: Optional[threading.Thread] = None
     if is_admin():
         file_thread = threading.Thread(
@@ -228,6 +262,7 @@ def main() -> None:
     try:
         run_processes(duration=args.duration, on_rows=bridge.on_process_rows)
     finally:
+        heartbeat.stop()
         bridge.close()
         if file_thread is not None:
             file_thread.join(timeout=2.0)

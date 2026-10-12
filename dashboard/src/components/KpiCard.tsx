@@ -1,38 +1,35 @@
 ﻿import React from 'react';
 import { InfoTooltip } from './InfoTooltip';
-import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { IconTile } from './ui';
 
 export interface KpiCardProps {
   icon: React.ReactNode;
   value: string | number;
   title: string;
   helperText: string;
-  trend?: 'up' | 'down' | 'flat';
+  tone?: 'accent' | 'sun' | 'mint' | 'rose';
+  footnote?: React.ReactNode;
 }
 
-export function KpiCard({ icon, value, title, helperText, trend }: KpiCardProps) {
+const GLOW: Record<NonNullable<KpiCardProps['tone']>, string> = {
+  accent: 'from-accent/25',
+  sun: 'from-sun/20',
+  mint: 'from-mint/20',
+  rose: 'from-rose/20',
+};
+
+export function KpiCard({ icon, value, title, helperText, tone = 'accent', footnote }: KpiCardProps) {
   return (
-    <div className="bg-[var(--color-sage)] rounded-[2rem] p-6 flex flex-col relative overflow-hidden transition-transform hover:scale-[1.02] duration-300">
-      <div className="flex justify-between items-start mb-6">
-        <div className="p-3 text-dark rounded-xl icon-wrapper">
-          {icon}
-        </div>
+    <div className="glass glass-hover p-5 overflow-hidden animate-fade-up">
+      <div className={`pointer-events-none absolute -top-16 -right-16 w-40 h-40 rounded-full bg-gradient-to-br ${GLOW[tone]} to-transparent blur-2xl`} />
+      <div className="relative flex items-start justify-between">
+        <IconTile tone={tone}>{icon}</IconTile>
         <InfoTooltip text={helperText} />
       </div>
-      
-      <div className="flex flex-col mt-auto">
-        <div className="text-4xl font-serif text-dark mb-1">{value}</div>
-        <div className="text-sm text-dark font-medium uppercase tracking-wider">{title}</div>
-        
-        {trend && (
-          <div className={`flex items-center text-sm font-medium mt-3 ${
-            trend === 'up' ? 'text-forest' : trend === 'down' ? 'text-critical' : 'text-dark'
-          }`}>
-            {trend === 'up' && <TrendingUp size={16} className="mr-1" />}
-            {trend === 'down' && <TrendingDown size={16} className="mr-1" />}
-            {trend === 'flat' && <Minus size={16} className="mr-1" />}
-          </div>
-        )}
+      <div className="relative mt-5">
+        <div className="text-[13px] font-medium text-fg-muted">{title}</div>
+        <div className="mt-1 text-[28px] leading-none font-semibold tracking-tight text-fg tabular-nums">{value}</div>
+        {footnote && <div className="mt-2.5 text-xs text-fg-subtle">{footnote}</div>}
       </div>
     </div>
   );

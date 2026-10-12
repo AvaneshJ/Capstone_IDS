@@ -1,25 +1,31 @@
-﻿import { useContext, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+﻿import { useContext, useState, type ReactNode } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
-  CheckCircle,
+  CheckCircle2,
   Download,
-  Shield,
-  TestTube,
+  ShieldCheck,
+  FlaskConical,
   XCircle,
   Clock,
   Unlock,
   Info,
+  Check,
+  Globe,
+  Monitor,
+  ExternalLink,
+  Lightbulb,
 } from 'lucide-react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { toast } from 'sonner';
 
 import { ExpertContext } from '../App';
-import { Skeleton, ErrorState, RiskGauge, TechDetails, ConfirmModal, StoryFlow, SeverityBadge } from '../components/index';
+import { Skeleton, ErrorState, RiskGauge, TechDetails, ConfirmModal, StoryFlow, SeverityBadge, IconTile } from '../components/index';
 import { getIncidentDetail, getHostIncidents, unblockIP, generateReport, getReportDownloadUrl } from '../api/endpoints';
-import { translateThreat, translateFileType, translateHostAction, translateNetworkAction, formatDuration } from '../lib/translate';
+import { translateThreat, translateFileType, translateHostAction, translateNetworkAction, formatDuration, translateIP, translatePort, mitreLink } from '../lib/translate';
+import { openDownload, openExternal } from '../lib/desktop';
 
 dayjs.extend(relativeTime);
 
@@ -45,6 +51,10 @@ interface AlertView {
   ruleId?: string;
   ruleStatus?: string;
   expiresAt?: number | null;
+  mitreId?: string;
+  mitreName?: string;
+  reasons?: string[];
+  remediationNotes?: string;
   llm?: { summary?: string; soc_recommendations?: string[] } | null;
   raw: Record<string, any>;
 }
@@ -79,6 +89,8 @@ function networkView(d: any): AlertView {
       ruleId: rule?.rule_id,
       ruleStatus: rule?.status,
       expiresAt: rule?.expires_at ?? null,
+      mitreId: d.threat?.mitre_technique_id,
+      mitreName: d.threat?.mitre_technique_name,
       llm: d.llm_explanation,
       raw: d,
     };
@@ -96,6 +108,8 @@ function networkView(d: any): AlertView {
     dstPort: d.dst_port,
     actionLabel: translateNetworkAction(d.action_taken),
     outcome: 'other',
+    mitreId: d.mitre_technique_id,
+    mitreName: d.mitre_technique_name,
     llm: null,
     raw: d,
   };
@@ -116,26 +130,41 @@ function hostView(row: any): AlertView {
     fileType: row.file_type,
     actionLabel: translateHostAction(row.soar_action),
     outcome: outcomeFromStatus(row.action_status),
+    mitreId: row.mitre_technique_id,
+    mitreName: row.mitre_technique_name,
+    reasons: Array.isArray(details.reasons) ? details.reasons : [],
+    remediationNotes: row.remediation_notes,
     llm: details.llm_explanation,
     raw: { ...row, raw_json: undefined, details },
   };
 }
 
+function StepCard({ n, title, children }: { n: number; title: string; children: ReactNode }) {
+  return (
+    <section className="glass p-5 animate-fade-up">
+      <h2 className="flex items-center gap-3 text-[15px] font-semibold text-fg mb-4">
+        <span className="w-7 h-7 rounded-lg bg-accent/15 ring-1 ring-inset ring-accent/30 text-accent-soft text-xs font-bold inline-flex items-center justify-center">
+          {n}
+        </span>
+        {title}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
 export default function AlertDetail() {
   const { expert } = useContext(ExpertContext);
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { source, id } = useParams<{ source: string; id: string }>();
   const [unblockModalOpen, setUnblockModalOpen] = useState(false);
-  const [isReviewed, setIsReviewed] = useState(
-    localStorage.getItem(`sentinel_reviewed_${id}`) === 'true'
-  );
+  const [isReviewed, setIsReviewed] = useState(localStorage.getItem(`sentinel_reviewed_${id}`) === 'true');
 
-  const { data: view, isLoading, error } = useQuery({
+  const { data: view, isLoading, error, refetch } = useQuery({
     queryKey: ['incident-detail', source, id],
     queryFn: async (): Promise<AlertView> => {
-      if (source === 'network') {
-        return networkView(await getIncidentDetail(id!));
-      }
+      if (source === 'network') return networkView(await getIncidentDetail(id!));
       if (source === 'computer') {
         const { host_incidents } = await getHostIncidents(500);
         const incident = host_incidents.find((i) => i.incident_id === id);
@@ -147,18 +176,43 @@ export default function AlertDetail() {
     enabled: !!id && !!source,
   });
 
-  if (isLoading) return <div className="p-6 max-w-4xl mx-auto"><Skeleton className="h-64 w-full" /></div>;
-  if (error || !view) return <div className="p-6 max-w-4xl mx-auto"><ErrorState message="Could not load alert details." /></div>;
+  const back = (
+    <button onClick={() => navigate(-1)} className="btn btn-ghost btn-sm -ml-2 mb-4">
+      <ArrowLeft size={15} /> Back
+    </button>
+  );
+
+  if (isLoading) {
+    return (
+      <div className="space-y-5">
+        {back}
+        <Skeleton className="h-28" />
+        <div className="grid grid-cols-2 gap-5">
+          <Skeleton className="h-56" />
+          <Skeleton className="h-56" />
+        </div>
+      </div>
+    );
+  }
+  if (error || !view) {
+    return (
+      <div>
+        {back}
+        <ErrorState message="We couldn't load this alert." onRetry={() => refetch()} />
+      </div>
+    );
+  }
 
   const markReviewed = () => {
     localStorage.setItem(`sentinel_reviewed_${id}`, 'true');
     setIsReviewed(true);
+    toast.success('Marked as reviewed');
   };
 
   const handleDownload = async () => {
     try {
       const report = await generateReport();
-      window.open(getReportDownloadUrl(report.filename), '_blank');
+      openDownload(getReportDownloadUrl(report.filename));
     } catch {
       toast.error("Couldn't create the report");
     }
@@ -179,176 +233,195 @@ export default function AlertDetail() {
   const threatInfo = translateThreat(view.threatRaw);
   const time = dayjs.unix(view.timestamp);
   const targetFile = translateFileType(view.fileType, view.filePath);
+  const isNetwork = view.source === 'network';
+  const touchedFile = !isNetwork && !!view.filePath;
 
-  let summary: string = view.llm?.summary || threatInfo.explanation;
-  if (view.source === 'computer') {
-    summary = `${view.processName || 'A program'} tried to access ${targetFile}. ${summary}`;
-  }
+  let summary: string = threatInfo.explanation;
+  if (touchedFile) summary = `${view.processName || 'A program'} tried to open ${targetFile.charAt(0).toLowerCase()}${targetFile.slice(1)}. ${summary}`;
+  else if (!isNetwork) summary = `${view.processName || 'A program'} behaved unusually. ${summary}`;
+  const aiSummary = expert ? view.llm?.summary : undefined;
 
   const confidence = view.confidence != null ? Math.round(view.confidence * 100) : null;
-
   const expiry = view.expiresAt ? dayjs.unix(view.expiresAt) : null;
   const minutesLeft = expiry ? Math.max(expiry.diff(dayjs(), 'minute'), 0) : 0;
   const timerText = expiry ? `Block ends in ${Math.floor(minutesLeft / 60)}h ${minutesLeft % 60}m` : '';
+  const canUnblock = isNetwork && !!view.ruleId && ['ACTIVE', 'SIMULATED'].includes((view.ruleStatus || '').toUpperCase());
 
-  const canUnblock = view.source === 'network' && !!view.ruleId && ['ACTIVE', 'SIMULATED'].includes((view.ruleStatus || '').toUpperCase());
-
-  let advice: string[] = view.llm?.soc_recommendations?.length
-    ? view.llm.soc_recommendations
-    : [threatInfo.advice].filter(Boolean);
-  if (view.threatRaw.toLowerCase().includes('stealer') || view.source === 'computer') {
+  const expertAdvice = expert ? view.llm?.soc_recommendations ?? [] : [];
+  let advice: string[] = [threatInfo.advice, ...expertAdvice].filter(Boolean);
+  if (view.threatRaw.toLowerCase().includes('stealer') || touchedFile) {
     advice = [
       'Change the passwords saved in your browser.',
       'Sign out of all sessions on important websites (email, bank).',
       'Run a full antivirus scan.',
-      ...advice,
+      ...expertAdvice,
     ];
   }
+  advice = [...new Set(advice)];
 
   const blockedFor = view.banSeconds ? ` for ${formatDuration(view.banSeconds)}` : '';
 
-  return (
-    <div className="aesthetic-icons max-w-4xl mx-auto p-4 md:p-6 space-y-6 text-gray-800">
-      <Link to="/" className="inline-flex items-center text-sm text-dark hover:text-dark">
-        <ArrowLeft className="w-4 h-4 mr-1" /> Back to Dashboard
-      </Link>
+  const outcome = {
+    done: { icon: isNetwork ? CheckCircle2 : ShieldCheck, tone: 'safe' as const, title: isNetwork ? `Blocked this address${blockedFor}` : view.actionLabel, note: 'Handled automatically. No action needed from you.' },
+    test: { icon: FlaskConical, tone: 'accent' as const, title: `Test mode: we would have ${isNetwork ? `blocked this address${blockedFor}` : view.actionLabel.toLowerCase()}`, note: 'SentinelAI is in safe test mode, so nothing on your computer was changed.' },
+    failed: { icon: XCircle, tone: 'danger' as const, title: "We tried to stop it but couldn't", note: 'Please follow the steps on the right, or contact IT support.' },
+    other: { icon: Info, tone: 'neutral' as const, title: view.actionLabel, note: view.remediationNotes || '' },
+  }[view.outcome];
+  const OutcomeIcon = outcome.icon;
 
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-[var(--color-sage)] p-6 rounded-[2rem]">
-        <div>
-          <div className="flex items-center gap-3 mb-1">
+  return (
+    <div className="space-y-5">
+      {back}
+
+      <section className="glass p-6 flex items-center gap-5 animate-fade-up">
+        <IconTile tone={isNetwork ? 'accent' : 'mint'} size="lg">
+          {isNetwork ? <Globe size={24} /> : <Monitor size={24} />}
+        </IconTile>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2 mb-1.5">
             <SeverityBadge severity={view.severity} />
-            <h1 className="text-xl font-semibold">{threatInfo.friendlyName}</h1>
+            <span className="tag tag-neutral">{isNetwork ? 'From the internet' : 'On this computer'}</span>
+            {isReviewed && (
+              <span className="tag tag-safe">
+                <Check size={12} /> Reviewed
+              </span>
+            )}
           </div>
-          <p className="text-sm text-dark" title={time.format('YYYY-MM-DD HH:mm:ss')}>
-            {time.fromNow()}
+          <h2 className="text-xl font-semibold tracking-tight text-fg">{threatInfo.friendlyName}</h2>
+          <p className="text-[13px] text-fg-muted mt-0.5" title={time.format('YYYY-MM-DD HH:mm:ss')}>
+            {time.fromNow()} · {time.format('dddd, MMM D, h:mm A')}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 shrink-0">
           {!isReviewed && (
-            <button onClick={markReviewed} className="px-3 py-1.5 text-sm font-medium text-emerald-700 bg-emerald-50 rounded-lg hover:bg-emerald-100 transition-colors">
-              Mark as reviewed
+            <button onClick={markReviewed} className="btn btn-secondary">
+              <Check size={15} /> Mark as reviewed
             </button>
           )}
-          <button onClick={handleDownload} className="px-3 py-1.5 text-sm font-medium text-dark bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors inline-flex items-center gap-2">
-            <Download className="w-4 h-4" /> Report
+          <button onClick={handleDownload} className="btn btn-secondary">
+            <Download size={15} /> Report
           </button>
         </div>
-      </div>
+      </section>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-[var(--color-sage)] p-6 rounded-[2rem] space-y-4">
-          <h2 className="text-lg font-medium flex items-center gap-2 text-dark">
-            <span className="bg-gray-100 text-dark rounded-full w-6 h-6 inline-flex items-center justify-center text-xs font-bold">1</span>
-            What happened?
-          </h2>
-          <p className="text-dark leading-relaxed">{summary}</p>
-          {view.source === 'network' && expert && view.srcIp && (
-            <p className="text-xs font-mono text-dark">
-              {view.srcIp} &rarr; {view.dstIp}{view.dstPort ? `:${view.dstPort}` : ''}
-            </p>
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        <StepCard n={1} title="What happened?">
+          <p className="text-[15px] text-fg leading-relaxed">{summary}</p>
+          {aiSummary && (
+            <div className="mt-3 glass-inset p-3">
+              <div className="text-[11px] text-fg-subtle mb-1">AI analysis</div>
+              <p className="text-[13px] text-fg-muted leading-relaxed selectable">{aiSummary}</p>
+            </div>
           )}
-
-          {view.source === 'computer' && (
-             <StoryFlow
-               steps={[
-                 { icon: 'cpu', label: view.processName || 'A program' },
-                 { icon: 'file-lock', label: targetFile },
-                 { icon: 'shield', label: view.actionLabel },
-               ]}
-             />
+          {isNetwork && view.srcIp && (
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="glass-inset p-3">
+                <div className="text-[11px] text-fg-subtle mb-0.5">Who</div>
+                <div className="text-sm text-fg font-medium">{translateIP(view.srcIp, expert)}</div>
+              </div>
+              <div className="glass-inset p-3">
+                <div className="text-[11px] text-fg-subtle mb-0.5">Tried to reach</div>
+                <div className="text-sm text-fg font-medium">{view.dstPort ? translatePort(view.dstPort) : 'Your computer'}</div>
+              </div>
+            </div>
           )}
-        </div>
+          {!isNetwork && view.reasons && view.reasons.length > 0 && (
+            <div className="mt-4 glass-inset p-3">
+              <div className="text-[11px] text-fg-subtle mb-1.5">Why it was flagged</div>
+              <ul className="space-y-1.5">
+                {view.reasons.map((reason, idx) => (
+                  <li key={idx} className="text-[13px] text-fg-muted leading-relaxed flex items-start gap-2 selectable">
+                    <span className="text-fg-subtle shrink-0">•</span>
+                    {reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {!isNetwork && (
+            <div className="mt-4">
+              <StoryFlow
+                steps={[
+                  { icon: 'cpu', label: view.processName || 'A program' },
+                  { icon: touchedFile ? 'file-lock' : 'activity', label: touchedFile ? targetFile : 'Unusual behaviour' },
+                  { icon: 'shield', label: view.outcome === 'test' ? `Test mode: ${view.actionLabel.toLowerCase()}` : view.actionLabel },
+                ]}
+              />
+            </div>
+          )}
+        </StepCard>
 
-        <div className="bg-[var(--color-sage)] p-6 rounded-[2rem] space-y-4">
-          <h2 className="text-lg font-medium flex items-center gap-2 text-dark">
-            <span className="bg-gray-100 text-dark rounded-full w-6 h-6 inline-flex items-center justify-center text-xs font-bold">2</span>
-            How dangerous is it?
-          </h2>
-          <div className="flex flex-col items-center">
-             <RiskGauge score={view.riskScore} />
-             {confidence != null && (
-               <p className="mt-4 text-sm text-dark font-medium">We're {confidence}% sure this is real.</p>
-             )}
+        <StepCard n={2} title="How dangerous is it?">
+          <div className="flex items-center justify-around gap-6">
+            <RiskGauge score={view.riskScore} />
+            <div className="space-y-3 text-sm max-w-[220px]">
+              {confidence != null && (
+                <div>
+                  <div className="text-[11px] text-fg-subtle mb-1">How sure we are</div>
+                  <div className="h-2 rounded-[3px] bg-white/8 overflow-hidden">
+                    <div className="h-full rounded-[3px] bg-gradient-to-r from-accent-strong to-accent-soft" style={{ width: `${confidence}%` }} />
+                  </div>
+                  <div className="text-fg mt-1 font-medium">{confidence}% sure this is real</div>
+                </div>
+              )}
+              {view.mitreId && view.mitreId !== 'T0000' && (
+                <div>
+                  <div className="text-[11px] text-fg-subtle mb-1">Known attack technique</div>
+                  <button onClick={() => openExternal(mitreLink(view.mitreId!))} className="text-accent-soft hover:text-fg text-[13px] inline-flex items-center gap-1 text-left">
+                    {view.mitreName || view.mitreId}
+                    {expert && <span className="font-mono text-fg-subtle">({view.mitreId})</span>}
+                    <ExternalLink size={12} />
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        </StepCard>
 
-        <div className="bg-[var(--color-sage)] p-6 rounded-[2rem] space-y-4">
-          <h2 className="text-lg font-medium flex items-center gap-2 text-dark">
-            <span className="bg-gray-100 text-dark rounded-full w-6 h-6 inline-flex items-center justify-center text-xs font-bold">3</span>
-            What did SentinelAI do?
-          </h2>
-          <div className="bg-gray-50 rounded-lg p-4 flex items-start gap-4">
-            {view.outcome === 'done' && (
-               <>
-                 {view.source === 'network'
-                   ? <CheckCircle className="w-6 h-6 text-emerald-500 shrink-0 mt-0.5" />
-                   : <Shield className="w-6 h-6 text-emerald-500 shrink-0 mt-0.5" />}
-                 <div>
-                   <p className="font-medium text-gray-800">
-                     {view.source === 'network' ? `Blocked this address${blockedFor}` : view.actionLabel}
-                   </p>
-                   {timerText && <p className="text-sm text-dark mt-1 flex items-center gap-1"><Clock className="w-3 h-3" /> {timerText}</p>}
-                 </div>
-               </>
-            )}
-            {view.outcome === 'test' && (
-               <>
-                 <TestTube className="w-6 h-6 text-blue-500 shrink-0 mt-0.5" />
-                 <div>
-                   <p className="font-medium text-gray-800">Test mode: we would have {view.source === 'network' ? `blocked this address${blockedFor}` : view.actionLabel.toLowerCase()}</p>
-                   {timerText && <p className="text-sm text-dark mt-1 flex items-center gap-1"><Clock className="w-3 h-3" /> {timerText}</p>}
-                 </div>
-               </>
-            )}
-            {view.outcome === 'failed' && (
-               <>
-                 <XCircle className="w-6 h-6 text-rose-500 shrink-0 mt-0.5" />
-                 <div>
-                   <p className="font-medium text-gray-800">We tried to stop it but couldn't</p>
-                 </div>
-               </>
-            )}
-            {view.outcome === 'other' && (
-               <>
-                 <Info className="w-6 h-6 text-slate-500 shrink-0 mt-0.5" />
-                 <div>
-                   <p className="font-medium text-gray-800">{view.actionLabel}</p>
-                 </div>
-               </>
-            )}
+        <StepCard n={3} title="What did SentinelAI do?">
+          <div className="glass-inset p-4 flex items-start gap-3">
+            <IconTile tone={outcome.tone} size="sm">
+              <OutcomeIcon size={16} />
+            </IconTile>
+            <div>
+              <p className="text-sm font-medium text-fg">{outcome.title}</p>
+              {outcome.note && <p className="text-[13px] text-fg-muted mt-0.5">{outcome.note}</p>}
+              {timerText && (
+                <p className="text-xs text-fg-subtle mt-2 flex items-center gap-1.5">
+                  <Clock size={12} /> {timerText}
+                </p>
+              )}
+            </div>
           </div>
-
           {canUnblock && (
-            <button onClick={() => setUnblockModalOpen(true)} className="mt-2 text-sm text-blue-600 font-medium hover:underline flex items-center gap-1">
-              <Unlock className="w-4 h-4" /> Unblock this address
+            <button onClick={() => setUnblockModalOpen(true)} className="btn btn-ghost btn-sm mt-3">
+              <Unlock size={14} /> Unblock this address
             </button>
           )}
-        </div>
+        </StepCard>
 
-        <div className="bg-[var(--color-sage)] p-6 rounded-[2rem] space-y-4">
-          <h2 className="text-lg font-medium flex items-center gap-2 text-dark">
-            <span className="bg-gray-100 text-dark rounded-full w-6 h-6 inline-flex items-center justify-center text-xs font-bold">4</span>
-            What should you do?
-          </h2>
-          <ul className="space-y-2">
-            {advice.map((item, idx) => (
-              <li key={idx} className="flex items-start gap-2 text-sm text-dark">
-                <div className="w-1.5 h-1.5 rounded-full bg-gray-400 mt-1.5 shrink-0" />
-                {item}
-              </li>
-            ))}
-          </ul>
-        </div>
+        <StepCard n={4} title="What should you do?">
+          {advice.length === 0 ? (
+            <p className="text-sm text-fg-muted">Nothing. SentinelAI has handled it.</p>
+          ) : (
+            <ul className="space-y-2.5">
+              {advice.map((item, idx) => (
+                <li key={idx} className="flex items-start gap-3 text-sm text-fg">
+                  <Lightbulb size={15} className="text-sun shrink-0 mt-0.5" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          )}
+        </StepCard>
       </div>
 
-      <div className="bg-[var(--color-sage)] rounded-[2rem] overflow-hidden">
-        <TechDetails data={view.raw} defaultOpen={expert} />
-      </div>
+      <TechDetails data={view.raw} defaultOpen={expert} />
 
       <ConfirmModal
         isOpen={unblockModalOpen}
         title="Unblock this address?"
-        message={`Are you sure you want to unblock ${view.srcIp}? It was blocked for: ${threatInfo.friendlyName.toLowerCase()}. It will be able to reach your computer again.`}
+        message={`It was blocked for: ${threatInfo.friendlyName.toLowerCase()}. Once unblocked, it will be able to reach your computer again.`}
         cancelLabel="Keep blocked"
         confirmLabel="Unblock anyway"
         variant="danger"

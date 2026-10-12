@@ -2,9 +2,9 @@
 
 Windows defence platform that detects **network attacks** (XGBoost on CSE-CIC-**IDS2018**-style flow features)
 and **host infostealer behaviour** (Isolation Forest on process + credential-file activity), then orchestrates a
-response through a multi-agent SOAR pipeline and shows it live in a React dashboard.
+response through a multi-agent SOAR pipeline and shows it live in a Windows desktop app.
 
-**Status:** working end-to-end prototype. Sensors → SOAR → SQLite → FastAPI/WebSocket → dashboard, with firewall
+**Status:** working end-to-end prototype. Sensors → SOAR → SQLite → FastAPI/WebSocket → desktop app, with firewall
 blocks and process kills in **test mode (dry-run)** by default.
 
 **ML packages:** active NIDS model is **v3** (CIC + lab merge, 7 classes incl. `PortScan`) — see `docs/ML_Package_v3.md`.
@@ -23,7 +23,7 @@ Capstone/
 ├── hids/             # Host sensors, Isolation Forest scoring, SOAR bridge (+ tests/)
 │   └── dataset/      # Stealer simulator, feature engineering, dataset builder, training
 ├── soar/             # Multi-agent SOAR + FastAPI backend  (+ tests/)
-├── dashboard/        # React + Vite SOC dashboard (live via WebSocket)
+├── dashboard/        # SentinelAI desktop app (Electron + React + Vite, live via WebSocket)
 ├── requirements.txt  # Single Python dependency list for the whole project
 └── README.md
 ```
@@ -38,18 +38,16 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt          # one list covers NIDS, ML, SOAR (incl. FastAPI/uvicorn), HIDS
 
-# 2. Backend API + WebSocket (terminal 1)
-cd soar
-python main.py server                    # http://127.0.0.1:8000  (Swagger: /docs)
-
-# 3. Dashboard (terminal 2)
+# 2. Desktop app (starts the backend API on http://127.0.0.1:8000 by itself)
 cd dashboard
 npm install
-copy .env.example .env.local             # first time only
-npm run dev                              # http://localhost:5173
+npm run desktop                          # or: npm run desktop:dev  (hot reload)
 ```
 
-Turn on **Expert** mode in the dashboard top bar to get the **Demo Panel**, which sends a sample network attack
+To run the backend on its own instead: `cd soar; python main.py server` (Swagger: `/docs`). The desktop app connects
+to it if it's already running. See `dashboard/README.md` for the browser dev server and building the installer.
+
+Turn on **Expert** mode in the app's top bar to get the **Demo Panel**, which sends a sample network attack
 or host stealer event through the real pipeline.
 
 ### Other entry points

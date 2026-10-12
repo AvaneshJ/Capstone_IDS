@@ -36,6 +36,7 @@ import ctypes
 import glob
 import os
 import subprocess
+import threading
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -441,17 +442,173 @@ def audit_row(
     )
 
 
+class EventLogApi:
+    """In-process wevtapi access returning the same XML as `wevtutil qe /f:xml`.
+
+    The sensor polls every second. Starting wevtutil (plus a console host) that often is
+    expensive, and every XPath query makes the Event Log service rescan the whole channel.
+    A pull subscription only hands over events written after it was opened.
+    """
+
+    QUERY_CHANNEL_PATH = 0x1
+    QUERY_FORWARD = 0x100
+    QUERY_REVERSE = 0x200
+    SUBSCRIBE_TO_FUTURE = 1
+    RENDER_XML = 1
+    ERROR_NO_MORE_ITEMS = 259
+    ERROR_INSUFFICIENT_BUFFER = 122
+
+    def __init__(self) -> None:
+        from ctypes import wintypes
+
+        api = ctypes.WinDLL("wevtapi", use_last_error=True)
+        self._query = api.EvtQuery
+        self._query.restype = ctypes.c_void_p
+        self._query.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        self._subscribe = api.EvtSubscribe
+        self._subscribe.restype = ctypes.c_void_p
+        self._subscribe.argtypes = [
+            ctypes.c_void_p, wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPCWSTR,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD,
+        ]
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._kernel32.CreateEventW.restype = wintypes.HANDLE
+        self._kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+        self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        self._kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        self._kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self._kernel32.ResetEvent.argtypes = [wintypes.HANDLE]
+        self._kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+        self._next = api.EvtNext
+        self._next.restype = wintypes.BOOL
+        self._next.argtypes = [
+            ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+            wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._render = api.EvtRender
+        self._render.restype = wintypes.BOOL
+        self._render.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._close = api.EvtClose
+        self._close.argtypes = [ctypes.c_void_p]
+        self._buf = ctypes.create_unicode_buffer(16 * 1024)
+
+    @staticmethod
+    def available() -> bool:
+        if os.name != "nt":
+            return False
+        try:
+            ctypes.WinDLL("wevtapi")
+        except OSError:
+            return False
+        return True
+
+    def _xml(self, event: int) -> str:
+        from ctypes import wintypes
+
+        used, props = wintypes.DWORD(0), wintypes.DWORD(0)
+        size = ctypes.sizeof(self._buf)
+        if not self._render(None, event, self.RENDER_XML, size, self._buf, ctypes.byref(used), ctypes.byref(props)):
+            if ctypes.get_last_error() != self.ERROR_INSUFFICIENT_BUFFER:
+                raise OSError(ctypes.get_last_error(), "EvtRender failed")
+            self._buf = ctypes.create_unicode_buffer(used.value // ctypes.sizeof(ctypes.c_wchar) + 1)
+            if not self._render(None, event, self.RENDER_XML, ctypes.sizeof(self._buf), self._buf,
+                                ctypes.byref(used), ctypes.byref(props)):
+                raise OSError(ctypes.get_last_error(), "EvtRender failed")
+        return self._buf.value
+
+    def _drain(self, results: int, count: int) -> List[str]:
+        from ctypes import wintypes
+
+        parts: List[str] = []
+        handles = (ctypes.c_void_p * 64)()
+        while len(parts) < count:
+            returned = wintypes.DWORD(0)
+            if not self._next(results, min(64, count - len(parts)), handles, 0, 0, ctypes.byref(returned)):
+                if ctypes.get_last_error() == self.ERROR_NO_MORE_ITEMS:
+                    break
+                raise RuntimeError(f"EvtNext failed: error {ctypes.get_last_error()}")
+            for i in range(returned.value):
+                try:
+                    parts.append(self._xml(handles[i]))
+                finally:
+                    self._close(handles[i])
+        return parts
+
+    def query(self, channel: str, xpath: str, count: int, newest_first: bool = False) -> str:
+        flags = self.QUERY_CHANNEL_PATH | (self.QUERY_REVERSE if newest_first else self.QUERY_FORWARD)
+        results = self._query(None, channel, xpath, flags)
+        if not results:
+            raise RuntimeError(f"EvtQuery failed: error {ctypes.get_last_error()}")
+        try:
+            return "\n".join(self._drain(results, count))
+        finally:
+            self._close(results)
+
+    def subscribe(self, channel: str, xpath: str) -> "EventLogSubscription":
+        signal = self._kernel32.CreateEventW(None, True, True, None)
+        if not signal:
+            raise OSError(ctypes.get_last_error(), "CreateEvent failed")
+        handle = self._subscribe(None, signal, channel, xpath, None, None, None, self.SUBSCRIBE_TO_FUTURE)
+        if not handle:
+            error = ctypes.get_last_error()
+            self._kernel32.CloseHandle(signal)
+            raise RuntimeError(f"EvtSubscribe failed: error {error}")
+        return EventLogSubscription(self, handle, signal)
+
+
+class EventLogSubscription:
+    def __init__(self, api: EventLogApi, handle: int, signal: int) -> None:
+        self._api = api
+        self._handle = handle
+        self._signal = signal
+
+    def read(self, count: int) -> str:
+        """Events written since the last read ("" when none). Never blocks."""
+        kernel32 = self._api._kernel32
+        if kernel32.WaitForSingleObject(self._signal, 0) != 0:
+            return ""
+        # Reset before draining: an event logged while we read signals again instead of being missed.
+        kernel32.ResetEvent(self._signal)
+        events = self._api._drain(self._handle, count)
+        if len(events) >= count:
+            kernel32.SetEvent(self._signal)
+        return "\n".join(events)
+
+    def close(self) -> None:
+        if self._handle:
+            self._api._close(self._handle)
+            self._api._kernel32.CloseHandle(self._signal)
+            self._handle = self._signal = 0
+
+
 class SecurityLogReader:
-    """Reads new 4663 events from the Security log with wevtutil (no extra packages)."""
+    """Reads new 4663 events from the Security log (wevtapi subscription, wevtutil as fallback)."""
 
     BATCH = 500
+    XPATH = "*[System[(EventID=4663)]]"
 
-    def __init__(self, run: Runner = subprocess.run):
+    def __init__(self, run: Runner = subprocess.run, channel: str = "Security"):
         self._run = run
+        self.channel = channel
         self.last_record = 0
+        self._api: Optional[EventLogApi] = None
+        self._subscription: Optional[EventLogSubscription] = None
+        if run is subprocess.run and EventLogApi.available():
+            try:
+                self._api = EventLogApi()
+            except Exception:
+                self._api = None
 
     def _query(self, xpath: str, count: int, newest_first: bool = False) -> str:
-        cmd = ["wevtutil", "qe", "Security", f"/q:{xpath}", "/f:xml", f"/c:{count}"]
+        if self._api is not None:
+            try:
+                return self._api.query(self.channel, xpath, count, newest_first)
+            except Exception:
+                self._api = None
+        cmd = ["wevtutil", "qe", self.channel, f"/q:{xpath}", "/f:xml", f"/c:{count}"]
         if newest_first:
             cmd.append("/rd:true")
         result = self._run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -461,10 +618,36 @@ class SecurityLogReader:
 
     def start(self) -> None:
         """Skip everything already in the log."""
+        if self._api is not None:
+            try:
+                self._subscription = self._api.subscribe(self.channel, self.XPATH)
+            except Exception:
+                self._subscription = None
         newest = parse_events_xml(self._query("*", 1, newest_first=True))
         self.last_record = newest[0]["record_id"] if newest else 0
 
+    def close(self) -> None:
+        if self._subscription is not None:
+            self._subscription.close()
+            self._subscription = None
+
+    def _read_subscription(self) -> List[Dict[str, Any]]:
+        events: List[Dict[str, Any]] = []
+        while True:
+            batch = parse_events_xml(self._subscription.read(self.BATCH))
+            events.extend(e for e in batch if e["record_id"] > self.last_record)
+            if len(batch) < self.BATCH:
+                break
+        if events:
+            self.last_record = max(e["record_id"] for e in events)
+        return events
+
     def read_new(self) -> List[Dict[str, Any]]:
+        if self._subscription is not None:
+            try:
+                return self._read_subscription()
+            except Exception:
+                self.close()
         events: List[Dict[str, Any]] = []
         while True:
             xpath = f"*[System[(EventID=4663) and (EventRecordID>{self.last_record})]]"
@@ -555,6 +738,7 @@ def run(
     duration: float = 0.0,
     dedup_window: float = DEDUP_WINDOW,
     on_rows: Optional[Callable[[List[Dict[str, Any]]], None]] = None,
+    stop_event: Optional[threading.Event] = None,
 ) -> None:
     admin = is_admin()
     if mode == "auto":
@@ -628,10 +812,15 @@ def run(
 
             if duration and time.monotonic() - start >= duration:
                 break
+            if stop_event is not None and stop_event.is_set():
+                break
             next_tick += poll_interval
             delay = next_tick - time.monotonic()
             if delay > 0:
-                time.sleep(delay)
+                if stop_event is not None:
+                    stop_event.wait(delay)
+                else:
+                    time.sleep(delay)
             else:
                 overruns += 1
                 next_tick = time.monotonic()
@@ -639,6 +828,8 @@ def run(
         pass
     finally:
         out.close()
+        if reader is not None:
+            reader.close()
         print(f"\nStopped after {ticks} checks ({overruns} late), {logged} event(s). Log: {out.path}")
         if mode == "audit":
             print("Audit rules are still on the files. Remove them with: python -m hids.file_monitor --remove-audit")

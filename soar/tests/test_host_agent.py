@@ -120,6 +120,26 @@ class TestHostSOARAgent(unittest.TestCase):
         self.assertAlmostEqual(incident.confidence, 0.61)
         self.assertAlmostEqual(incident.anomaly_score, 0.4)
 
+    def test_model_anomaly_without_file_is_never_terminated(self):
+        event = stealer_event(label="Anomalous", anomaly_score=0.99, confidence=0.99, file_path="",
+                              reasons=["It ran from a user folder."])
+        incident = self.agent.process_host_event(event)
+        self.assertEqual(incident.classification, "Anomalous")
+        self.assertEqual(incident.soar_action, HostActionType.ALERT_ONLY)
+        self.assertEqual(incident.severity, SeverityLevel.MEDIUM)
+        self.assertLess(incident.risk_score, 7.0)
+        self.assertIn("It ran from a user folder.", incident.reasons)
+
+    def test_stealer_label_without_file_is_alert_only(self):
+        incident = self.agent.process_host_event(stealer_event(label="Stealer", file_path=""))
+        self.assertEqual(incident.soar_action, HostActionType.ALERT_ONLY)
+
+    def test_model_anomaly_with_credential_file_is_stealer(self):
+        incident = self.agent.process_host_event(stealer_event(label="Anomalous"))
+        self.assertEqual(incident.classification, "Stealer")
+        self.assertEqual(incident.soar_action, HostActionType.TERMINATE_PROCESS)
+        self.assertTrue(any("Cookies" in r for r in incident.reasons))
+
     def test_unknown_label_falls_back_to_heuristics(self):
         incident = self.agent.process_host_event(stealer_event(process_name="chrome.exe", label="Suspicious"))
         self.assertEqual(incident.classification, "Normal")
