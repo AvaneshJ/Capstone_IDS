@@ -3,6 +3,9 @@
 !macro customInit
   ; A running engine locks files in resources\backend during an upgrade.
   nsExec::Exec 'taskkill /F /T /IM sentinel-backend.exe'
+  ; This stop is intended: drop the run marker so the next start doesn't report a tamper kill.
+  ReadEnvStr $0 PROGRAMDATA
+  Delete "$0\SentinelAI\engine_run.json"
 !macroend
 
 !macro customInstall
@@ -15,6 +18,8 @@
 
 !macro customUnInit
   nsExec::Exec 'taskkill /F /T /IM sentinel-backend.exe'
+  ReadEnvStr $0 PROGRAMDATA
+  Delete "$0\SentinelAI\engine_run.json"
 !macroend
 
 !macro customUnInstall

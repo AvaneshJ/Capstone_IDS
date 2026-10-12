@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -340,6 +341,32 @@ class TestSelfProtectionService(_TempDataDir):
         self.sp._last_raised.clear()
         self.sp.check_previous_run()
         self.assertEqual(len(self._tamper_incidents()), 1, "a planned stop is not a kill")
+
+    def test_windows_shutdown_is_not_a_kill(self):
+        from core import self_protection as sp_mod
+
+        now = time.time()
+        marker = security.data_dir() / "engine_run.json"
+        marker.write_text(json.dumps({"pid": 999_999_9, "started_at": now - 3600, "alive_at": now - 20, "planned_stop": False}))
+        with mock.patch.object(sp_mod, "windows_shutdown_time", return_value=now):
+            self.sp.check_previous_run()
+        self.assertEqual(len(self._tamper_incidents()), 0, "engine alive until Windows shut down")
+
+    def test_kill_long_before_shutdown_still_detected(self):
+        from core import self_protection as sp_mod
+
+        now = time.time()
+        marker = security.data_dir() / "engine_run.json"
+        marker.write_text(json.dumps({"pid": 999_999_9, "started_at": now - 7200, "alive_at": now - 3600, "planned_stop": False}))
+        with mock.patch.object(sp_mod, "windows_shutdown_time", return_value=now):
+            self.sp.check_previous_run()
+        self.assertEqual(len(self._tamper_incidents()), 1, "killed an hour before the shutdown")
+
+    def test_heartbeat_keeps_planned_stop(self):
+        self.sp.mark_planned_stop()
+        self.sp.tick()
+        marker = json.loads((security.data_dir() / "engine_run.json").read_text())
+        self.assertTrue(marker["planned_stop"])
 
     def test_chain_tamper_raises_incident(self):
         self.db.save_audit_log("a", "b")
