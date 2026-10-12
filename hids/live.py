@@ -32,6 +32,7 @@ import sys
 import threading
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from config.own_processes import ParentMap, is_own_binary
 from hids.file_monitor import to_host_event
 from hids.predict import IsolationForestPredictor, Prediction, explain_run
 from hids.tamper_monitor import protected_pids, row_finding
@@ -78,6 +79,7 @@ class HostBridge:
         self._alerted_files: set = set()
         self.on_tamper: Callable[[Dict[str, Any]], Any] = self._print_tamper
         self._protected_pids = protected_pids()
+        self._parents = ParentMap()
         # Optional: runs it returns False for are not scored unless they touched a watched file.
         self.score_filter: Optional[Callable[[Mapping[str, Any]], bool]] = None
 
@@ -86,7 +88,7 @@ class HostBridge:
         print(f"[hids] TAMPER {finding['title']}: {finding['details']}")
 
     def _check_tamper(self, row: Mapping[str, Any]) -> None:
-        finding = row_finding(row, self._protected_pids, trusted_parents=self._protected_pids)
+        finding = row_finding(row, self._protected_pids, self._parents)
         if finding is not None:
             try:
                 self.on_tamper(finding)
@@ -130,14 +132,21 @@ class HostBridge:
             incidents.append(self._send(event))
         return incidents
 
+    def is_own(self, row: Mapping[str, Any]) -> bool:
+        """SentinelAI's own process tree (Electron, backend, supervisor and their children)."""
+        return self._parents.is_own(row.get("pid")) or is_own_binary(str(row.get("exe_path") or ""))
+
     def on_process_rows(self, rows: Iterable[Mapping[str, Any]]) -> List[Any]:
         finished = []
         for row in rows:
+            self._parents.observe(row)
             event = str(row.get("event", "")).upper()
             if event == "START":
                 self._check_tamper(row)
                 continue
             if event not in ("EXIT", "END"):
+                continue
+            if self.is_own(row):
                 continue
             if self.score_filter is not None and not self._file_for_run(row) and not self.score_filter(row):
                 continue

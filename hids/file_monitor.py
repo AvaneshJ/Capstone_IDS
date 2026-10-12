@@ -44,13 +44,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from hids.process_monitor import DailyCsvWriter
+from hids.process_monitor import LOG_DIR, DailyCsvWriter
 
 POLL_INTERVAL = 1.0
 RESCAN_EVERY = 60.0
 DEDUP_WINDOW = 2.0
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(BASE_DIR, "logs")
 LOG_PREFIX = "file_events"
 
 FIELDS = [
@@ -585,14 +584,15 @@ class EventLogSubscription:
 
 
 class SecurityLogReader:
-    """Reads new 4663 events from the Security log (wevtapi subscription, wevtutil as fallback)."""
+    """Reads new events (4663 by default) from the Security log (wevtapi subscription, wevtutil as fallback)."""
 
     BATCH = 500
-    XPATH = "*[System[(EventID=4663)]]"
 
-    def __init__(self, run: Runner = subprocess.run, channel: str = "Security"):
+    def __init__(self, run: Runner = subprocess.run, channel: str = "Security", event_ids: Tuple[int, ...] = (4663,)):
         self._run = run
         self.channel = channel
+        self._ids = " or ".join(f"EventID={int(i)}" for i in event_ids)
+        self.XPATH = f"*[System[({self._ids})]]"
         self.last_record = 0
         self._api: Optional[EventLogApi] = None
         self._subscription: Optional[EventLogSubscription] = None
@@ -650,7 +650,7 @@ class SecurityLogReader:
                 self.close()
         events: List[Dict[str, Any]] = []
         while True:
-            xpath = f"*[System[(EventID=4663) and (EventRecordID>{self.last_record})]]"
+            xpath = f"*[System[({self._ids}) and (EventRecordID>{self.last_record})]]"
             batch = parse_events_xml(self._query(xpath, self.BATCH))
             if not batch:
                 break

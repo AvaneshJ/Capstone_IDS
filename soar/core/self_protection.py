@@ -28,6 +28,7 @@ if str(_ROOT) not in sys.path:
 
 from config import security  # noqa: E402
 from config.integrity import AppendOnlyWatch, IntegrityMonitor  # noqa: E402
+from config.paths import HIDS_LOG_DIR, ROOT as INSTALL_ROOT  # noqa: E402
 from core.schemas import HostActionType, HostFileEvent, HostIncident, HostProcessInfo, SeverityLevel  # noqa: E402
 from core.watchdog import SensorWatchdog  # noqa: E402
 
@@ -47,7 +48,7 @@ class SelfProtection:
         self,
         orchestrator: Any,
         notify: Optional[Notify] = None,
-        root: Path = _ROOT,
+        root: Path = INSTALL_ROOT,
         manifest_file: Optional[Path] = None,
         watchdog: Optional[SensorWatchdog] = None,
         log_dirs: Optional[List[Path]] = None,
@@ -56,7 +57,7 @@ class SelfProtection:
         self.notify = notify
         self.integrity = IntegrityMonitor(root, manifest_file)
         self.watchdog = watchdog or SensorWatchdog()
-        self.log_watches = [AppendOnlyWatch(d) for d in (log_dirs if log_dirs is not None else [root / "hids" / "logs"])]
+        self.log_watches = [AppendOnlyWatch(d) for d in (log_dirs if log_dirs is not None else [HIDS_LOG_DIR])]
         self.chain: Optional[Dict[str, Any]] = None
         self.events: List[Dict[str, Any]] = []
         self._last_raised: Dict[str, float] = {}

@@ -157,8 +157,10 @@ class TestAccessorIsOwner(unittest.TestCase):
 class TestDescribeProcess(unittest.TestCase):
 
     def test_own_process(self):
-        info = describe_process(os.getpid(), sys.executable)
-        self.assertAlmostEqual(info["create_time"], __import__("psutil").Process().create_time(), places=2)
+        me = __import__("psutil").Process()
+        # Not sys.executable: in a Windows venv that is a launcher stub, not this process's image.
+        info = describe_process(os.getpid(), me.exe())
+        self.assertAlmostEqual(info["create_time"], me.create_time(), places=2)
 
     def test_reused_pid_with_different_exe_is_rejected(self):
         self.assertEqual(describe_process(os.getpid(), r"C:\not\the\same.exe"), {})

@@ -23,11 +23,48 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from config import security  # noqa: E402
+from config.paths import LEGACY_DB_PATH, database_path  # noqa: E402
 
 logger = logging.getLogger("SentinelAI.DatabaseManager")
 
-DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "database", "sentinel.db")
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
+
+
+def _anchor_file(db_path: str) -> Path:
+    tag = hashlib.sha1(os.path.normcase(os.path.abspath(db_path)).encode()).hexdigest()[:12]
+    return security.data_dir() / f"evidence_anchor_{tag}.json"
+
+
+def _migrate_legacy_db(target: Path) -> None:
+    """Copy the checkout's old soar/database/sentinel.db (and its evidence anchor) to the data folder once."""
+    if target.exists() or not LEGACY_DB_PATH.exists():
+        return
+    if os.environ.get("SENTINEL_DATA_DIR") or os.environ.get("SENTINEL_DB_PATH"):
+        return  # explicit locations (tests, service installs) start clean
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        src = sqlite3.connect(str(LEGACY_DB_PATH))
+        dst = sqlite3.connect(str(target))
+        with dst:
+            src.backup(dst)  # consistent copy that includes rows still in the -wal file
+        src.close()
+        dst.close()
+        old_anchor = _anchor_file(str(LEGACY_DB_PATH))
+        if old_anchor.exists():
+            _anchor_file(str(target)).write_bytes(old_anchor.read_bytes())
+        logger.info("Moved database from %s to %s", LEGACY_DB_PATH, target)
+    except Exception as exc:
+        logger.error("Could not copy the old database to %s: %s", target, exc)
+        try:
+            target.unlink()
+        except OSError:
+            pass
+
+
+def default_db_path() -> str:
+    target = database_path()
+    _migrate_legacy_db(target)
+    return str(target)
 
 CHAINED_TABLES = {"incidents": "incident_id", "host_incidents": "incident_id", "audit_logs": "id"}
 GENESIS_HASH = "0" * 64
@@ -44,8 +81,8 @@ class DatabaseManager:
     automated migrations/schema execution, and analytical query helpers.
     """
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or default_db_path()
         self._lock = threading.RLock()
         self._chain_key: Optional[bytes] = None
         
@@ -358,8 +395,7 @@ class DatabaseManager:
         return security.sign(f"{seq}|{table}|{key}|{rec_hash}|{prev_hash}".encode(), self._key())
 
     def _anchor_path(self) -> Path:
-        tag = hashlib.sha1(os.path.normcase(os.path.abspath(self.db_path)).encode()).hexdigest()[:12]
-        return security.data_dir() / f"evidence_anchor_{tag}.json"
+        return _anchor_file(self.db_path)
 
     def _read_anchor(self) -> Optional[Dict[str, Any]]:
         try:

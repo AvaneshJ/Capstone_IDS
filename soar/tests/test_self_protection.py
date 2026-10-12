@@ -393,10 +393,66 @@ class TestTamperClassification(unittest.TestCase):
                                    install_root=os.path.normcase(r"C:\SentinelAI"))
         self.assertEqual(finding["kind"], "install_tamper_command")
 
-    def test_rows_from_sentinel_itself_are_trusted(self):
-        row = {"event": "START", "pid": 9, "ppid": 100, "process_name": "taskkill.exe", "cmdline": "taskkill /pid 4242 /T /F"}
-        self.assertIsNone(row_finding(row, pids={4242}, trusted_parents={100}))
-        self.assertIsNotNone(row_finding({**row, "ppid": 555}, pids={4242}, trusted_parents={100}))
+    def test_electron_processes_with_install_path_not_flagged(self):
+        electron = rf"{_ROOT}\dashboard\node_modules\electron\dist\electron.exe"
+        common = (rf"--user-data-dir=C:\Users\me\AppData\Roaming\SentinelAI --app-user-model-id=com.sentinelai.desktop "
+                  rf"--app-path={_ROOT}\dashboard --enable-sandbox --video-capture-use-gpu-memory-buffer --lang=en-US "
+                  "--device-scale-factor=1 --num-raster-threads=4 --enable-main-frame-before-activation "
+                  "--renderer-client-id=5 --time-ticks-at-unix-epoch=-1760000000000000 --launch-time-ticks=123456789 "
+                  "--field-trial-handle=1888,i,2735582036112380419,9873455646233420102,262144 "
+                  "--disable-features=SpareRendererForSitePerProcess,WinRetrieveSuggestionsOnlyOnDemand "
+                  "--variations-seed-version --mojo-platform-channel-handle=3084 /prefetch:1")
+        for kind in ("--type=renderer", "--type=gpu-process --gpu-preferences=UAAAAAAAAADgAAAEAAAAAAAAAAAAAAAAAAABgAAAAAAA",
+                     "--type=utility --utility-sub-type=network.mojom.NetworkService --service-sandbox-type=none"):
+            cmd = f'"{electron}" {kind} {common}'
+            self.assertIsNone(classify_command("electron.exe", cmd, protected_pids={4242}), kind)
+            row = {"event": "START", "pid": 13920, "ppid": 555, "process_name": "electron.exe", "cmdline": cmd}
+            self.assertIsNone(row_finding(row, pids={4242}), kind)
+        backend = rf'"{_ROOT}\.venv\Scripts\python.exe" -m soar.main --host 127.0.0.1 --port 8000'
+        self.assertIsNone(classify_command("python.exe", backend, protected_pids={4242}))
+
+    def test_real_destructive_commands_on_install_folder_still_flagged(self):
+        for cmd in (rf"cmd /c del /q {_ROOT}\models\sentinel_xgb_v3.pkl",
+                    rf"cmd.exe /c echo x & rd /s /q {_ROOT}\soar",
+                    rf'powershell -Command "Remove-Item -Recurse -Force \"{_ROOT}\hids\""',
+                    rf"icacls {_ROOT} /deny Everyone:F",
+                    rf"powershell -c Set-Content -Path {_ROOT}\soar\rules\host.yaml -Value x"):
+            finding = classify_command("cmd.exe", cmd)
+            self.assertEqual(finding and finding["kind"], "install_tamper_command", cmd)
+        self.assertIsNone(classify_command("notepad.exe", rf"notepad.exe {_ROOT}\README.md"))
+        self.assertIsNone(classify_command("code.exe", rf'"C:\VS Code\code.exe" --reuse-window {_ROOT}\hids\remove_old.py'))
+
+    def test_own_process_tree_is_trusted(self):
+        from unittest import mock
+        from config import own_processes
+
+        parents = own_processes.ParentMap()
+        for pid, ppid in ((200, 100), (300, 200)):
+            parents.observe({"pid": pid, "ppid": ppid})
+        row = {"event": "START", "pid": 300, "ppid": 200, "process_name": "taskkill.exe", "cmdline": "taskkill /pid 4242 /T /F"}
+        with mock.patch.object(own_processes, "root_pids", return_value=frozenset({100})):
+            self.assertTrue(parents.is_own(300))
+            self.assertIsNone(row_finding(row, pids={4242}, parents=parents))
+            parents.observe({"pid": 301, "ppid": 555})
+            self.assertFalse(parents.is_own(301))
+            self.assertIsNotNone(row_finding({**row, "pid": 301, "ppid": 555}, pids={4242}, parents=parents))
+
+    def test_security_log_reader_queries_tamper_events(self):
+        from hids.tamper_monitor import TamperLogReader
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            xml = ("<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><EventID>1102</EventID>"
+                   "<EventRecordID>9</EventRecordID></System><UserData/></Event>") if len(calls) == 2 else ""
+            return SimpleNamespace(returncode=0, stdout=xml, stderr="")
+
+        reader = TamperLogReader(run=fake_run)
+        reader.start()
+        self.assertEqual([f["kind"] for f in reader.read_new()], ["log_cleared"])
+        self.assertIn("EventID=1100 or EventID=1102 or EventID=4719", calls[1][3])
+        reader.close()
 
     def test_security_log_events(self):
         self.assertEqual(event_finding({"event_id": 1102, "record_id": 5, "data": {}})["kind"], "log_cleared")
@@ -439,6 +495,35 @@ class TestSensorHooks(unittest.TestCase):
                                  "cmdline": "taskkill /F /PID 4242", "exe_path": r"C:\Windows\System32\taskkill.exe"}])
         self.assertEqual([f["kind"] for f in found], ["kill_attempt"])
         self.assertEqual(found[0]["pid"], 77)
+
+    def test_host_bridge_skips_own_processes(self):
+        from hids.live import HostBridge
+
+        scored = []
+        bridge = HostBridge(predictor=SimpleNamespace(predict_many=lambda rows: scored.extend(rows) or []))
+        found = []
+        bridge.on_tamper = found.append
+        cmd = (rf'"{_ROOT}\dashboard\node_modules\electron\dist\electron.exe" --type=renderer '
+               rf"--app-path={_ROOT}\dashboard --enable-sandbox")
+        rows = [{"event": "START", "pid": os.getpid() + 100000, "ppid": os.getpid(), "process_name": "electron.exe",
+                 "cmdline": cmd, "exe_path": ""},
+                {"event": "EXIT", "pid": os.getpid() + 100000, "ppid": os.getpid(), "process_name": "electron.exe"},
+                {"event": "EXIT", "pid": 999999, "ppid": 1, "process_name": "python.exe",
+                 "exe_path": rf"{_ROOT}\.venv\Scripts\python.exe"}]
+        bridge.on_process_rows(rows)
+        self.assertEqual(found, [])
+        self.assertEqual(scored, [])
+
+    def test_host_agent_never_terminates_sentinel(self):
+        from agents.host_agent import HostSOARAgent
+        from core.schemas import HostActionType, HostFileEvent
+
+        agent = HostSOARAgent(dry_run=False)
+        proc = HostProcessInfo(pid=os.getpid(), process_name="python.exe", exe_path=sys.executable)
+        fevent = HostFileEvent(file_path=r"C:\Users\x\AppData\Local\Google\Chrome\User Data\Default\Login Data")
+        action, status, _ = agent._plan_and_execute_response(proc, fevent, "Stealer", 9.5)
+        self.assertEqual(action, HostActionType.ALERT_ONLY)
+        self.assertEqual(agent._terminate_pid(proc)[0], "IDENTITY_MISMATCH")
 
 
 class TestApiAuth(_TempDataDir):

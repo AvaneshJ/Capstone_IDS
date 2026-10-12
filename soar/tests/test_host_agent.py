@@ -9,6 +9,7 @@ import logging
 import tempfile
 import subprocess
 import unittest
+from unittest import mock
 
 import psutil
 from pydantic import ValidationError
@@ -155,6 +156,11 @@ class TestLiveTerminationSafety(unittest.TestCase):
     """Live (non dry-run) termination must verify the PID still belongs to the reported process."""
 
     def setUp(self):
+        # The stand-in "malware" is a python child of this test run, which SentinelAI otherwise treats as its own.
+        for name in ("is_own_process", "is_own_binary"):
+            patcher = mock.patch(f"agents.host_agent.{name}", return_value=False)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.agent = HostSOARAgent(dry_run=False)
         self.agent.initialize()
         self.proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])

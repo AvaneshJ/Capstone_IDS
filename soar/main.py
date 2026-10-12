@@ -104,14 +104,41 @@ def cmd_status(args):
     orchestrator.shutdown()
 
 
+def _ensure_manifest():
+    """Installed build: trust the bundled files on first start if the installer step didn't run."""
+    from config.paths import FROZEN
+    from config import integrity
+
+    if FROZEN and not integrity.manifest_path().exists():
+        manifest = integrity.write_manifest()
+        logger.info("Integrity manifest created (%d files): %s", len(manifest["files"]), integrity.manifest_path())
+
+
 def cmd_server(args):
     """Launch FastAPI backend server with Uvicorn for React frontend."""
     import uvicorn
     print(f"{Fore.CYAN}[*] Launching SentinelAI FastAPI Backend Server on http://{args.host}:{args.port} (Swagger docs: http://{args.host}:{args.port}/docs)...{Style.RESET_ALL}")
-    uvicorn.run("api.server:app", host=args.host, port=args.port, reload=args.reload)
+    _ensure_manifest()
+    if args.reload:
+        uvicorn.run("api.server:app", host=args.host, port=args.port, reload=True)
+    else:
+        from api.server import app
+        uvicorn.run(app, host=args.host, port=args.port)
+
+
+def cmd_integrity(argv):
+    """`integrity generate|verify|show` (same as python -m config.integrity, also works in the .exe)."""
+    from config import integrity
+
+    sys.argv = [sys.argv[0], *argv]
+    integrity.main()
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "integrity":
+        cmd_integrity(sys.argv[2:])
+        return
+
     parser = argparse.ArgumentParser(description="SentinelAI - Multi-Agent Autonomous SOAR Platform")
     subparsers = parser.add_subparsers(dest="command", help="Available subcommands")
 
@@ -153,4 +180,7 @@ def main():
 
 
 if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.freeze_support()  # joblib / sklearn worker processes in the frozen .exe
     main()

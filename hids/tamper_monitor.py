@@ -3,10 +3,12 @@ Tamper sensor - attempts to blind or stop SentinelAI.
 
   * Security log (Administrator): 1102 log cleared, 1100 event logging shut down,
     4719 audit policy changed (only removals; SentinelAI itself only adds auditing).
+    Read through hids.file_monitor.SecurityLogReader (wevtapi subscription, wevtutil fallback).
   * Process command lines (from hids.process_monitor START rows): kill tools aimed at
     SentinelAI processes, event-log clearing, auditpol disabling, firewall switched off,
     and destructive commands on the SentinelAI install folder.
 
+SentinelAI's own process tree (Electron, backend, supervisor and their children) is never flagged.
 Each finding is a dict: kind, title, mitre_id, mitre_name, details (+ pid/process when known).
 
 Run from repo root (Administrator for the Security log part):
@@ -22,16 +24,25 @@ import threading
 import time
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
-from hids.file_monitor import Runner, is_admin, parse_events_xml
+from config.own_processes import INSTALL_ROOT, ParentMap, root_pids
+from hids.file_monitor import Runner, SecurityLogReader, is_admin
 
 POLL_INTERVAL = 15.0
-INSTALL_ROOT = os.path.normcase(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 PROTECTED_NAMES = ("sentinelai", "sentinel-backend", "sentinel_backend", "python.exe", "pythonw.exe",
                    "electron.exe", "soar\\main.py", "soar/main.py", "uvicorn")
-KILL_TOOLS = {"taskkill.exe", "tskill.exe", "pskill.exe", "pskill64.exe", "processhacker.exe"}
-DESTRUCTIVE = ("del ", "erase ", "rd ", "rmdir ", "remove-item", "icacls", "takeown", "attrib ",
-               "move-item", "ren ", "rename-item", "set-content", "out-file", "copy-item")
+KILL_TOOLS = {"taskkill", "tskill", "pskill", "pskill64", "processhacker"}
+# Commands (first word of a command segment) that delete, move, overwrite or re-permission files
+DESTRUCTIVE_VERBS = {
+    "del", "erase", "rd", "rmdir", "rm", "ri", "remove-item", "move", "mv", "mi", "move-item",
+    "ren", "rename", "rni", "rename-item", "icacls", "cacls", "takeown", "attrib", "set-content",
+    "sc", "add-content", "ac", "clear-content", "clc", "out-file", "copy", "cp", "cpi", "copy-item",
+    "xcopy", "robocopy", "set-acl", "cipher", "sdelete", "sdelete64",
+}
+# Separators and shell flags after which a new command starts: a && b, a | b, a; b, cmd /c b, powershell -c b
+SEGMENT_SPLIT = re.compile(
+    r"&&|\|\||[&|;\r\n]|(?:^|\s)(?:/c|/k|-c|-command|-commandwithargs)(?=\s)", re.IGNORECASE)
+FIRST_WORD = re.compile(r'^\s*[("\'{]*\s*([^\s"\'(){}]+)')
 
 # AuditPolicyChanges: %%8448 success removed, %%8450 failure removed
 AUDIT_REMOVED = ("%%8448", "%%8450", "removed")
@@ -70,38 +81,47 @@ def event_finding(event: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 class TamperLogReader:
-    """New 1100 / 1102 / 4719 events from the Security log via wevtutil."""
-
-    XPATH = "*[System[(EventID=1100 or EventID=1102 or EventID=4719) and (EventRecordID>{last})]]"
+    """New 1100 / 1102 / 4719 events from the Security log."""
 
     def __init__(self, run: Runner = subprocess.run):
-        self._run = run
-        self.last_record = 0
-
-    def _query(self, xpath: str, count: int, newest_first: bool = False) -> str:
-        cmd = ["wevtutil", "qe", "Security", f"/q:{xpath}", "/f:xml", f"/c:{count}"]
-        if newest_first:
-            cmd.append("/rd:true")
-        result = self._run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if result.returncode != 0:
-            raise RuntimeError(f"wevtutil failed: {(result.stderr or '').strip()}")
-        return result.stdout or ""
+        self.reader = SecurityLogReader(run=run, event_ids=tuple(sorted(TAMPER_LOG_EVENTS)))
 
     def start(self) -> None:
-        newest = parse_events_xml(self._query("*", 1, newest_first=True))
-        self.last_record = newest[0]["record_id"] if newest else 0
+        self.reader.start()
+
+    def close(self) -> None:
+        self.reader.close()
 
     def read_new(self) -> List[Dict[str, Any]]:
-        events = parse_events_xml(self._query(self.XPATH.format(last=self.last_record), 200))
-        if events:
-            self.last_record = max(e["record_id"] for e in events)
-        findings = [event_finding(e) for e in events]
+        findings = [event_finding(e) for e in self.reader.read_new()]
         return [f for f in findings if f is not None]
 
 
 # ---------------------------------------------------------------------------
 # Command lines
 # ---------------------------------------------------------------------------
+
+def _verb(segment: str) -> str:
+    match = FIRST_WORD.match(segment)
+    if not match:
+        return ""
+    word = os.path.basename(match.group(1).replace("/", "\\").rstrip("\\")).lower()
+    return word[:-4] if word.endswith(".exe") else word
+
+
+def command_verbs(cmdline: str) -> List[str]:
+    """First word of every command in a command line: 'cmd /c del x & rd y' -> ['cmd', 'del', 'rd']."""
+    verbs = []
+    for segment in SEGMENT_SPLIT.split(cmdline or ""):
+        verb = _verb(segment)
+        if not verb:
+            continue
+        verbs.append(verb)
+        if verb in ("powershell", "pwsh"):
+            # powershell Remove-Item x: the command can be a positional argument
+            verbs.extend(t.strip("\"'").lower() for t in segment.split()[1:] if not t.startswith("-"))
+    return verbs
+
 
 def _targets_us(cmd: str, protected_pids: Iterable[int], names: Iterable[str]) -> Optional[str]:
     for name in names:
@@ -120,18 +140,21 @@ def classify_command(
     names: Iterable[str] = PROTECTED_NAMES,
     install_root: str = INSTALL_ROOT,
 ) -> Optional[Dict[str, Any]]:
-    name = (process_name or "").lower()
     cmd = (cmdline or "").lower()
     if not cmd:
         return None
+    name = (process_name or "").lower()
+    verbs = set(command_verbs(cmd))
+    if name.endswith(".exe"):
+        verbs.add(name[:-4])
 
     kill_context = (
-        name in KILL_TOOLS
-        or "stop-process" in cmd
-        or re.search(r"\bkill\s+(-\w+\s+)*-?\d+", cmd) is not None
-        or ("wmic" in cmd and "process" in cmd and ("delete" in cmd or "terminate" in cmd))
-        or re.search(r"\b(sc|sc\.exe)\s+(stop|delete|config)\b", cmd) is not None
-        or re.search(r"\bnet\s+stop\b", cmd) is not None
+        bool(verbs & KILL_TOOLS)
+        or bool(verbs & {"stop-process", "spps"})
+        or ("kill" in verbs and re.search(r"\bkill\s+(-\w+\s+)*-?\d+", cmd) is not None)
+        or ("wmic" in verbs and "process" in cmd and ("delete" in cmd or "terminate" in cmd))
+        or ("sc" in verbs and re.search(r"\bsc(\.exe)?\s+(stop|delete|config)\b", cmd) is not None)
+        or ("net" in verbs and re.search(r"\bnet(\.exe)?\s+stop\b", cmd) is not None)
     )
     if kill_context:
         target = _targets_us(cmd, protected_pids, names)
@@ -140,40 +163,35 @@ def classify_command(
                             "Impair Defenses: Disable or Modify Tools",
                             f"{process_name} targeted {target}: {cmdline[:300]}")
 
-    if ("wevtutil" in cmd and re.search(r"\b(cl|clear-log)\b", cmd)) or "clear-eventlog" in cmd or "remove-eventlog" in cmd:
+    if re.search(r"\bwevtutil(\.exe)?\W+(cl|clear-log)\b", cmd) or re.search(r"\b(clear|remove)-eventlog\b", cmd):
         return _finding("log_clear_command", "Command to clear Windows event logs", "T1070.001",
                         "Indicator Removal: Clear Windows Event Logs", cmdline[:300])
 
-    if "auditpol" in cmd and ("/clear" in cmd or "/remove" in cmd or ":disable" in cmd):
+    if re.search(r"\bauditpol\b", cmd) and ("/clear" in cmd or "/remove" in cmd or ":disable" in cmd):
         return _finding("audit_disable_command", "Command to disable Windows auditing", "T1562.002",
                         "Impair Defenses: Disable Windows Event Logging", cmdline[:300])
 
-    if ("advfirewall" in cmd and "state off" in cmd) or ("set-netfirewallprofile" in cmd and "false" in cmd):
+    if ("advfirewall" in cmd and "state off" in cmd) or \
+            (re.search(r"\bset-netfirewallprofile\b", cmd) and "false" in cmd):
         return _finding("firewall_disabled", "Command to switch off Windows Firewall", "T1562.004",
                         "Impair Defenses: Disable or Modify System Firewall", cmdline[:300])
 
-    if install_root and install_root in os.path.normcase(cmd) and any(verb in cmd for verb in DESTRUCTIVE):
+    if install_root and install_root in os.path.normcase(cmd) and verbs & DESTRUCTIVE_VERBS:
         return _finding("install_tamper_command", "Command modifying SentinelAI's files", "T1565.001",
                         "Data Manipulation: Stored Data Manipulation", cmdline[:300])
     return None
 
 
 def protected_pids() -> set:
-    pids = {os.getpid(), os.getppid()}
-    extra = os.environ.get("SENTINEL_PROTECTED_PIDS", "")
-    pids.update(int(p) for p in extra.split(",") if p.strip().isdigit())
-    return pids
+    return set(root_pids())
 
 
-def row_finding(row: Mapping[str, Any], pids: Iterable[int], trusted_parents: Iterable[int]) -> Optional[Dict[str, Any]]:
-    """process_monitor START row -> finding. Commands launched by SentinelAI itself are ignored."""
+def row_finding(row: Mapping[str, Any], pids: Iterable[int], parents: Optional[ParentMap] = None) -> Optional[Dict[str, Any]]:
+    """process_monitor START row -> finding. SentinelAI's own process tree is never flagged."""
     if str(row.get("event", "")).upper() != "START":
         return None
-    try:
-        if int(row.get("ppid") or 0) in set(trusted_parents):
-            return None
-    except (TypeError, ValueError):
-        pass
+    if parents is not None and parents.is_own(row.get("pid")):
+        return None
     finding = classify_command(str(row.get("process_name") or ""), str(row.get("cmdline") or ""), pids)
     if finding:
         finding.update(pid=row.get("pid"), process_name=row.get("process_name"),
@@ -199,17 +217,20 @@ def run(
     reader.start()
     stop_event = stop_event or threading.Event()
     start = time.monotonic()
-    while not stop_event.is_set():
-        try:
-            for finding in reader.read_new():
-                on_tamper(finding)
-        except Exception as exc:
-            print(f"[tamper] Security log read failed: {exc}")
-        if on_tick:
-            on_tick()
-        if duration and time.monotonic() - start >= duration:
-            break
-        stop_event.wait(interval)
+    try:
+        while not stop_event.is_set():
+            try:
+                for finding in reader.read_new():
+                    on_tamper(finding)
+            except Exception as exc:
+                print(f"[tamper] Security log read failed: {exc}")
+            if on_tick:
+                on_tick()
+            if duration and time.monotonic() - start >= duration:
+                break
+            stop_event.wait(interval)
+    finally:
+        reader.close()
 
 
 def main() -> None:

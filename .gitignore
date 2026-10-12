@@ -27,6 +27,10 @@ hids/dataset/manifests/
 # Built HIDS training tables (regenerated from local logs)
 hids/dataset/*.csv
 
+# PyInstaller build output (packaging/build_backend.ps1)
+build/
+build_backend.log
+
 # Test cache
 .pytest_cache/
 

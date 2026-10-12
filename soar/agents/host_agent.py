@@ -24,6 +24,11 @@ except ImportError:
 
 # Ensure soar root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.append(_REPO_ROOT)
+
+from config.own_processes import is_own_binary, is_own_process
 
 from agents.base_agent import BaseAgent
 from core.schemas import (
@@ -375,6 +380,8 @@ class HostSOARAgent(BaseAgent):
         if process.pid <= 4:
             # Safeguard: Never terminate System/Idle processes
             return HostActionType.ALERT_ONLY, "ALERT_DISPATCHED", "System process touching file; termination skipped for safety."
+        if is_own_process(process.pid) or is_own_binary(process.exe_path):
+            return HostActionType.ALERT_ONLY, "ALERT_DISPATCHED", "SentinelAI's own process; termination skipped."
 
         # Execute Process Kill (with dry_run safety)
         if self.dry_run:
@@ -428,6 +435,8 @@ class HostSOARAgent(BaseAgent):
                 return "IDENTITY_MISMATCH", "executable path of live process could not be verified"
             if os.path.normcase(os.path.abspath(actual_exe)) != os.path.normcase(os.path.abspath(process.exe_path)):
                 return "IDENTITY_MISMATCH", f"expected {process.exe_path}, found {actual_exe}"
+        if is_own_process(process.pid) or is_own_binary(actual_exe):
+            return "IDENTITY_MISMATCH", "process belongs to SentinelAI"
 
         try:
             p.terminate()

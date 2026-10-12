@@ -18,7 +18,12 @@ from core.event_bus import EventBus, Event
 
 logger = logging.getLogger("SentinelAI.ReportAgent")
 
-DEFAULT_REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "reports")
+try:
+    from config.paths import REPORTS_DIR as _REPORTS_DIR
+
+    DEFAULT_REPORTS_DIR = str(_REPORTS_DIR)
+except ImportError:
+    DEFAULT_REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "reports")
 
 
 class ReportAgent(BaseAgent):

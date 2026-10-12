@@ -31,7 +31,12 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 INTERVAL = 2.0
 STATS_EVERY = 30.0
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(BASE_DIR, "logs")
+try:
+    from config.paths import HIDS_LOG_DIR as _LOG_DIR
+
+    LOG_DIR = str(_LOG_DIR)
+except ImportError:  # run as a loose script without the repo root on sys.path
+    LOG_DIR = os.path.join(BASE_DIR, "logs")
 CMDLINE_MAX = 1000
 
 FIELDS = [

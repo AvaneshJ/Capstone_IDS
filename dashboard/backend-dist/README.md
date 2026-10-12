@@ -5,13 +5,19 @@ The installer copies this folder into `resources/backend/`. When it contains
 starts that instead of looking for the repo's `.venv` Python. Without it, the app
 runs the engine from the source checkout (`../soar/main.py`).
 
-When freezing, include the WinDivert driver that ships inside `pydivert`
-(`WinDivert64.dll` / `WinDivert64.sys`, LGPL) so live network monitoring works on PCs
-without Npcap:
+Build everything from `dashboard/`:
 
 ```
-pyinstaller --name sentinel-backend --collect-data pydivert --collect-submodules scapy ... main.py
+npm run installer        # = npm run backend:build && npm run desktop:dist
 ```
 
-The installed app requests Administrator rights on launch (`requestedExecutionLevel`),
-which the engine inherits. WinDivert capture and the credential-file sensor need it.
+- `backend:build` runs `packaging/build_backend.ps1` (recipe: `packaging/sentinel-backend.spec`)
+  and stages the onedir build here, including the models, `schema.sql`, `policies.yaml` and
+  the WinDivert driver from `pydivert` (LGPL) so capture works on PCs without Npcap.
+- `desktop:dist` produces `release/SentinelAI Setup <version>.exe`.
+
+The installed app requests Administrator rights (`requestedExecutionLevel`), which the engine
+inherits. The installer runs `sentinel-backend.exe integrity generate` after copying files
+(`electron/installer.nsh`), and the engine creates the manifest on first start if that step
+was skipped. Runtime data (database, logs, reports, token, manifest) lives in
+`%PROGRAMDATA%\SentinelAI` and is kept on uninstall.
